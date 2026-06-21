@@ -1,0 +1,6 @@
+{
+  "name": "Nepal Women Cricket Video Intelligence Hub",
+  "description": "An elite video analysis and coaching high-performance dashboard for the Nepal Women's National Cricket team with AI coach insights powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
