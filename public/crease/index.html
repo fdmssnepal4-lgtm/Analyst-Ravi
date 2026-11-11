@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crease Video Analyst</title>
+<meta name="theme-color" content="#17221d">
+<meta name="description" content="Ball-by-ball cricket video tagging, drawing and stats. Works offline.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Crease">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: analysis room at night. Video fixed on the left, one working panel on the right (Tag / Balls / Charts / Help). Stacks on narrow screens. Single dark theme by choice: video work is done on a dark surface. */
+:root{
+  color-scheme:dark;
+  --bg:#0f1714; --panel:#17221d; --panel2:#1e2c26; --line:#2c3d35;
+  --text:#e9f0ea; --muted:#94a69b;
+  --accent:#e3b950; --accent-ink:#1b1505;
+  --dot:#71837a; --run:#8fd18b; --four:#5fb3f0; --six:#c893f7; --wkt:#ee5c4f;
+  --display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font-family:var(--body);font-size:16px;line-height:1.4;-webkit-tap-highlight-color:transparent}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:.02em;margin:0;text-wrap:balance}
+.num{font-family:var(--display);font-variant-numeric:tabular-nums}
+
+header.top{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-family:var(--display);font-weight:700;font-size:22px;text-transform:uppercase;letter-spacing:.06em}
+.brand i{font-style:normal;color:var(--accent)}
+.matchbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;min-width:240px}
+.score{margin-left:auto;font-family:var(--display);font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.score small{font-size:15px;color:var(--muted);font-weight:500;margin-left:6px}
+select,input[type=text],textarea{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:40px;max-width:100%}
+textarea{width:100%;min-height:44px;resize:vertical}
+
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;min-height:40px;font-weight:500}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn.danger{border-color:var(--wkt);color:var(--wkt)}
+.btn.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.small{min-height:34px;padding:4px 10px;font-size:14px}
+.btn[disabled]{opacity:.45;cursor:default}
+
+.banner{margin:10px 16px 0;padding:8px 12px;border:1px dashed var(--accent);border-radius:8px;color:var(--accent);font-size:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+main{display:grid;gap:14px;padding:14px 16px 40px;grid-template-columns:1fr}
+@media (min-width:900px){
+  main{grid-template-columns:minmax(0,1.35fr) minmax(340px,1fr);align-items:start}
+  .videocol{position:sticky;top:10px}
+}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+
+/* video */
+.stage{position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
+.zoomer{position:absolute;inset:0;transform-origin:0 0}
+.zoomer video,.zoomer canvas{position:absolute;inset:0;width:100%;height:100%}
+.zoomer video{object-fit:contain;background:#000}
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;text-align:center;padding:16px;background:repeating-linear-gradient(90deg,#14201a 0 40px,#16241d 40px 80px)}
+.logo{width:96px;height:96px}
+.empty p{margin:0;color:var(--muted);max-width:34ch}
+.seek{width:100%;margin:10px 0 4px;accent-color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.row + .row{margin-top:8px}
+.time{font-family:var(--display);font-size:20px;font-variant-numeric:tabular-nums;margin-left:auto}
+.lbl{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-right:2px}
+.sw{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);padding:0;min-height:0}
+.sw.on{border-color:var(--text)}
+
+/* tabs */
+.tabs{display:flex;gap:4px;margin-bottom:10px}
+.tab{flex:1;background:transparent;border:0;border-bottom:3px solid var(--line);padding:10px 4px;font-family:var(--display);font-size:19px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.tab.on{color:var(--text);border-color:var(--accent)}
+.pane{display:none}.pane.on{display:block}
+
+/* form */
+.field{margin-top:12px}
+.field>label,.field>.lbl{display:block;margin-bottom:5px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:6px 12px;min-height:38px;font-size:15px}
+.chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.chip.runs{min-width:44px;font-family:var(--display);font-size:20px;font-weight:600;border-radius:8px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.two input{width:100%}
+.maps{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start}
+.maps figure{margin:0}
+.maps figcaption{font-size:13px;color:var(--muted);margin-top:4px;min-height:2.6em}
+svg{display:block;width:100%;height:auto;touch-action:manipulation}
+svg.tap{cursor:crosshair}
+.ballno{font-family:var(--display);font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
+.stepper{display:flex;gap:6px;align-items:center}
+.savebar{display:flex;gap:8px;margin-top:14px}
+.savebar .primary{flex:1;min-height:50px;font-size:18px}
+
+/* list */
+.filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.filters select{width:100%}
+.tablewrap{overflow-x:auto;margin-top:10px}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:500;text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tr.ball{cursor:pointer}
+tr.ball.cur{background:var(--panel2)}
+.pill{display:inline-block;min-width:30px;text-align:center;border-radius:6px;padding:2px 7px;font-family:var(--display);font-weight:600;font-size:17px;color:#0d1210}
+.sub{color:var(--muted);font-size:13px}
+.count{color:var(--muted);font-size:14px}
+
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+.tile{background:var(--panel2);border-radius:8px;padding:8px 10px}
+.tile b{display:block;font-family:var(--display);font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.tile span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:13px;color:var(--muted);margin-top:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+h3{font-size:19px;margin:16px 0 6px;text-transform:uppercase}
+
+.help ol{padding-left:20px;margin:6px 0}
+.help li{margin:6px 0}
+.help p{margin:8px 0;color:var(--muted)}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--text);color:#0d1210;padding:10px 14px;border-radius:10px;display:none;gap:12px;align-items:center;z-index:20;max-width:calc(100% - 32px);font-weight:500}
+#toast button{background:transparent;border:0;color:#7a4b00;font-weight:700;text-decoration:underline}
+@media (max-width:480px){.maps{grid-template-columns:1fr 1fr}.tiles{grid-template-columns:repeat(2,1fr)}.score{margin-left:0}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+[hidden]{display:none!important}
+.stages{display:grid;gap:6px;grid-template-columns:1fr}
+.stages.single #stage1{display:none}
+.stages.split{grid-template-columns:1fr 1fr}
+.stages.split .stage.act{outline:2px solid var(--accent);outline-offset:-2px}
+.stages.overlay .stage{grid-area:1/1}
+.stages.overlay #stage1{opacity:var(--ov);background:transparent}
+.stages.overlay #stage1 video{background:transparent}
+.stages.overlay .stage:not(.act){pointer-events:none}
+.stages.overlay #stage1 .empty{display:none}
+.tagv{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.6);padding:1px 8px;border-radius:6px;font-size:12px;pointer-events:none}
+.stages.single .tagv,.stages.overlay .tagv{display:none}
+body.solo main{grid-template-columns:1fr}
+body.solo .sidepanel,body.solo .matchbar,body.solo .score,body.solo .banner{display:none!important}
+html,body{height:100%}
+#drawer{margin-top:8px}
+#toolsTog{display:none}
+body.solo{overflow:hidden;display:flex;flex-direction:column}
+body.solo header.top{display:none}
+body.solo main{flex:1;min-height:0;padding:0;display:block}
+body.solo .videocol{position:relative;top:0;height:100%;display:flex;flex-direction:column;border:0;border-radius:0;padding:0}
+body.solo .stages{flex:1;min-height:0;grid-template-rows:minmax(0,1fr);gap:3px}
+body.solo .stage{aspect-ratio:auto;height:100%;min-height:0;border-radius:0}
+body.solo .bar{padding:0 10px 8px;background:var(--panel)}
+body.solo .bar .seek{margin:6px 0 4px}
+body.solo #toolsTog{display:inline-block}
+body.solo #drawer{display:none;position:absolute;left:0;right:0;bottom:0;max-height:62%;overflow:auto;margin:0;padding:10px 12px;background:rgba(23,34,29,.95);border-top:1px solid var(--line);z-index:5}
+body.solo.tools #drawer{display:block}
+@media (orientation:portrait){body.solo .stages.split{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <div class="brand">Crease <i>Video Analyst</i></div>
+  <div class="matchbar">
+    <label class="lbl" for="matchSel">Match</label>
+    <select id="matchSel"></select>
+    <button class="btn small" id="newMatch">New match</button>
+    <button class="btn small" id="renameMatch">Rename</button>
+    <button class="btn small danger" id="delMatch">Delete</button>
+  </div>
+  <div class="score" id="score"></div>
+</header>
+<div class="banner" id="banner" hidden>
+  <span>This is example data so you can see how the app works. Nothing here is from a real match.</span>
+  <button class="btn small primary" id="startOwn">Start my own match</button>
+</div>
+
+<main>
+  <section class="videocol card">
+    <div class="stages single" id="stages" style="--ov:.5">
+      <div class="stage act" id="stage0">
+        <div class="zoomer"><video playsinline preload="metadata"></video><canvas></canvas></div>
+        <span class="tagv">Video 1</span>
+        <div class="empty"><svg class="logo" viewBox="0 0 120 120" role="img" aria-label="Crease Video Analyst logo"><rect width="120" height="120" rx="26" fill="#0f1714"/><circle cx="60" cy="60" r="40" fill="#c8372d"/><path d="M33 31 Q60 60 33 89" fill="none" stroke="#f3e9c8" stroke-width="3" stroke-dasharray="4 5" stroke-linecap="round"/><path d="M87 31 Q60 60 87 89" fill="none" stroke="#f3e9c8" stroke-width="3" stroke-dasharray="4 5" stroke-linecap="round"/><path d="M51 42 L51 78 L80 60 Z" fill="#e3b950" stroke="#0f1714" stroke-width="3" stroke-linejoin="round"/></svg><div class="brand">Crease <i>Video Analyst</i></div><h2>No video loaded</h2><p>Choose a match or net-session video saved on this tablet. It stays on your device.</p><button class="btn primary" data-load="0">Choose video</button></div>
+      </div>
+      <div class="stage" id="stage1">
+        <div class="zoomer"><video playsinline preload="metadata"></video><canvas></canvas></div>
+        <span class="tagv">Video 2</span>
+        <div class="empty"><h2>Second video</h2><p>Load another video to compare the two.</p><button class="btn primary" data-load="1">Choose video 2</button></div>
+      </div>
+    </div>
+    <input type="file" id="file0" accept="video/*" hidden><input type="file" id="file1" accept="video/*" hidden>
+    <div class="bar">
+    <input type="range" class="seek" id="seek" min="0" max="1000" value="0" aria-label="Video position">
+    <div class="row">
+      <button class="btn" id="back5" aria-label="Back 5 seconds">−5s</button>
+      <button class="btn" id="fback" aria-label="Back one frame">◀ Frame</button>
+      <button class="btn primary" id="play" style="min-width:86px">Play</button>
+      <button class="btn" id="ffwd" aria-label="Forward one frame">Frame ▶</button>
+      <button class="btn" id="fwd5" aria-label="Forward 5 seconds">+5s</button>
+      <button class="btn" id="toolsTog">Tools</button>
+      <button class="btn" id="fsBtn">Full screen</button>
+      <span class="time num" id="time">0:00.0 / 0:00</span>
+    </div>
+    </div>
+    <div id="drawer">
+    <div class="row">
+      <span class="lbl">View</span><span id="layouts" class="row"></span>
+      <span id="ctlWrap" class="row"><span class="lbl" style="margin-left:8px">Buttons control</span><span id="ctls" class="row"></span></span>
+      <span id="ovWrap" class="row"><label class="lbl" for="ovRange" style="margin-left:8px">See-through</label><input type="range" id="ovRange" min="0" max="100" value="50" style="accent-color:var(--accent)"></span>
+    </div>
+    <div class="row">
+      <span class="lbl">Speed</span><span id="speeds" class="row"></span>
+      <span class="lbl" style="margin-left:8px">Zoom</span><span id="zooms" class="row"></span>
+      <button class="btn small" id="flip">Mirror</button>
+      <label class="lbl" for="fps" style="margin-left:8px">Video frame rate</label>
+      <select id="fps"><option>25</option><option selected>30</option><option>50</option><option>60</option></select>
+    </div>
+    <div class="row">
+      <span class="lbl">Draw</span><span id="tools" class="row"></span><span id="colors" class="row"></span>
+      <button class="btn small" id="undo">Undo</button><button class="btn small" id="clear">Clear</button>
+    </div>
+    <div class="row">
+      <span class="lbl">Repeat</span>
+      <button class="btn small" id="loopIn">Set start</button><button class="btn small" id="loopOut">Set end</button>
+      <button class="btn small" id="loopTog">Repeat off</button><span class="sub num" id="loopLbl"></span>
+    </div>
+    <div class="row">
+      <span class="lbl">Ball speed</span>
+      <button class="btn small" id="markRel">Mark release</button><button class="btn small" id="markArr">Mark at batter</button>
+      <label class="lbl" for="dist">Metres</label><input type="text" id="dist" value="17.68" inputmode="decimal" style="width:76px">
+      <span class="sub" id="spdOut"></span>
+    </div>
+    <div class="row">
+      <button class="btn small" data-load="0">Load video 1</button><button class="btn small" data-load="1">Load video 2</button>
+      <button class="btn small" id="snap">Screenshot</button>
+      <button class="btn small" id="panelTog" style="margin-left:auto">Show tagging &amp; charts</button>
+    </div>
+    <details class="help" style="margin-top:10px"><summary class="lbl" style="cursor:pointer">How to use the player</summary>
+      <ol>
+        <li>Tap <b>Tools</b> to show or hide these controls. <b>Load video 1</b>, then press <b>Play</b>. Tap the picture to play or pause.</li>
+        <li><b>Frame</b> buttons move one frame. <b>Speed</b> gives slow motion.</li>
+        <li><b>Zoom with two fingers</b>: pinch out to zoom in, pinch in to zoom out, even while the video plays. Drag with one finger to move around. The 1× button resets it.</li>
+        <li><b>Screenshot</b> saves what you see. In Side by side it saves both videos in one picture.</li>
+        <li><b>Side by side</b> shows two videos. Load video 2, line each video up at the same moment (for example ball release), then choose <b>Both together</b> so play, pause and frame steps move them in step.</li>
+        <li><b>Overlay</b> puts video 2 on top of video 1. Use See-through to fade between them.</li>
+        <li><b>Draw</b>: Line, Arrow, Circle and Pen draw with your finger. <b>Angle</b>: tap three points and the middle one shows the angle.</li>
+        <li><b>Repeat</b>: set a start and an end, then turn Repeat on to watch one action again and again.</li>
+        <li><b>Ball speed</b>: stop on the frame of release and mark it, stop on the frame the ball reaches the batter and mark it. The speed is an average and only an estimate.</li>
+      </ol>
+    </details>
+    </div>
+  </section>
+
+  <section class="card sidepanel">
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="tag">Tag</button>
+      <button class="tab" data-tab="balls">Balls</button>
+      <button class="tab" data-tab="charts">Charts</button>
+      <button class="tab" data-tab="help">Help</button>
+    </div>
+
+    <div class="pane on" id="pane-tag">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <span class="lbl" id="editLbl">Next ball</span>
+          <div class="ballno" id="ballno">0.1</div>
+        </div>
+        <div class="stepper">
+          <span class="lbl">Innings</span><span id="innChips" class="chips"></span>
+          <button class="btn small" id="ballMinus" aria-label="Previous ball number">−</button>
+          <button class="btn small" id="ballPlus" aria-label="Next ball number">+</button>
+        </div>
+      </div>
+      <div class="two field">
+        <div><label class="lbl" for="bowler">Bowler</label><input type="text" id="bowler" list="bowlers" autocomplete="off"></div>
+        <div><label class="lbl" for="batter">Batter</label><input type="text" id="batter" list="batters" autocomplete="off"></div>
+      </div>
+      <datalist id="bowlers"></datalist><datalist id="batters"></datalist>
+      <div class="two field">
+        <div><span class="lbl">Bowling</span><div class="chips" id="g-btype"></div></div>
+        <div><span class="lbl">Batter hand</span><div class="chips" id="g-hand"></div></div>
+      </div>
+      <div class="maps field">
+        <figure><span class="lbl">Tap where it pitched</span><div id="pitchIn"></div><figcaption id="pitchCap">Not set</figcaption></figure>
+        <figure><span class="lbl">Tap where it went</span><div id="wagonIn"></div><figcaption id="wagonCap">Not set</figcaption></figure>
+      </div>
+      <div class="field"><div class="chips" id="g-ftoss"></div></div>
+      <div class="field"><span class="lbl">Shot</span><div class="chips" id="g-shot"></div></div>
+      <div class="field"><span class="lbl">Runs</span><div class="chips" id="g-runs"></div></div>
+      <div class="field"><span class="lbl">Extras</span><div class="chips" id="g-extra"></div></div>
+      <div class="field"><span class="lbl">Wicket</span><div class="chips" id="g-wicket"></div></div>
+      <div class="field"><span class="lbl">Batter in control?</span><div class="chips" id="g-control"></div></div>
+      <div class="field"><label class="lbl" for="note">Note</label><textarea id="note" rows="1"></textarea></div>
+      <div class="savebar">
+        <button class="btn primary" id="saveBall">Save ball</button>
+        <button class="btn" id="cancelEdit" hidden>Cancel</button>
+      </div>
+      <p class="sub" style="margin:8px 0 0">Pause just after the ball finishes, then save. The video time is stored with the ball.</p>
+    </div>
+
+    <div class="pane" id="pane-balls">
+      <div class="filters" id="filters1"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" id="playAll">Play these clips</button>
+        <button class="btn" id="stopAll" hidden>Stop</button>
+        <label class="lbl" for="pre" style="margin-left:6px">Clip starts</label>
+        <select id="pre"><option value="5">5s before</option><option value="8" selected>8s before</option><option value="12">12s before</option></select>
+        <span class="count" id="count1" style="margin-left:auto"></span>
+      </div>
+      <div class="tablewrap"><table id="ballTable"></table></div>
+    </div>
+
+    <div class="pane" id="pane-charts">
+      <div class="filters" id="filters2"></div>
+      <div class="tiles" id="tiles"></div>
+      <div class="maps">
+        <figure><span class="lbl">Pitch map</span><div id="pitchOut"></div></figure>
+        <figure><span class="lbl">Wagon wheel</span><div id="wagonOut"></div></figure>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--dot)"></i>Dot</span><span><i style="background:var(--run)"></i>1–3</span>
+        <span><i style="background:var(--four)"></i>Four</span><span><i style="background:var(--six)"></i>Six</span>
+        <span><i style="background:var(--wkt)"></i>Wicket</span>
+      </div>
+      <h3>Length breakdown</h3><div class="tablewrap"><table id="lenTable"></table></div>
+      <h3>Batters</h3><div class="tablewrap"><table id="batTable"></table></div>
+      <h3>Bowlers</h3><div class="tablewrap"><table id="bowlTable"></table></div>
+      <h3>Save your data</h3>
+      <div class="row">
+        <button class="btn" id="expCsv">Save as spreadsheet (CSV)</button>
+        <button class="btn" id="expJson">Save backup</button>
+        <button class="btn" id="impJson">Open backup</button>
+        <button class="btn" id="copyCsv">Copy table</button>
+      </div>
+      <input type="file" id="jsonFile" accept=".json,application/json" hidden>
+      <p class="sub">Your tags are kept in this browser on this tablet. Save a backup after every session so nothing is lost.</p>
+    </div>
+
+    <div class="pane help" id="pane-help">
+      <h3 style="margin-top:0">How to use it</h3>
+      <ol>
+        <li>Tap <b>New match</b> and give it a name.</li>
+        <li>Tap <b>Load video 1</b> and pick the video from this tablet.</li>
+        <li>Press <b>Play</b>. Pause just after each ball finishes.</li>
+        <li>On the <b>Tag</b> tab: type bowler and batter, tap the pitch where it landed, tap the field where it went, tap the runs, then <b>Save ball</b>.</li>
+        <li>On the <b>Balls</b> tab: tap any ball to watch it again, or filter and press <b>Play these clips</b> to watch them one after another.</li>
+        <li>On the <b>Charts</b> tab: see the pitch map, wagon wheel and numbers, and save a backup.</li>
+      </ol>
+      <h3>Looking closely</h3>
+      <p>Use the Frame buttons to move one frame at a time, Speed for slow motion, and Zoom to enlarge. With Zoom on, choose Move and drag the picture. Choose Line, Arrow, Circle or Pen and draw on the video with your finger.</p>
+      <h3>Good to know</h3>
+      <p>The video is never uploaded. When you reopen the app, choose the same video again and all your tagged balls will still jump to the right moment. The pitch map is drawn from the bowler's end, so for a right-hander the off side is on the left.</p>
+    </div>
+  </section>
+</main>
+<div id="toast"><span id="toastMsg"></span><button id="toastAct" hidden></button></div>
+
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var KEY="crease.v1";
+var LENGTHS=["Yorker","Full","Good","Back of a length","Short","Full toss"];
+var SHOTS=["Defence","Drive","Cut","Pull","Sweep","Flick","Leave","Edge","Other"];
+var OPT={btype:["Pace","Spin"],hand:["Right","Left"],ftoss:["Full toss"],shot:SHOTS,runs:["0","1","2","3","4","6"],
+  extra:["None","Wide","No-ball","Bye","Leg-bye"],wicket:["Not out","Bowled","Caught","LBW","Run out","Stumped"],control:["Yes","No"]};
+
+/* ---------- pure cricket logic ---------- */
+function lineOf(x,hand){var off=hand==="Right"?-x:x;
+  if(off>0.5)return"Wide outside off";if(off>0.17)return"Outside off";if(off>0.06)return"Off stump";
+  if(off>=-0.06)return"Middle";if(off>=-0.17)return"Leg stump";return"Down leg";}
+function lengthOf(d){return d<2?"Yorker":d<6?"Full":d<8?"Good":d<10?"Back of a length":"Short";}
+function zoneOf(wx,wy,hand){var a=Math.atan2(wx,wy)*180/Math.PI;var o=hand==="Right"?-a:a;
+  if(o>=0)return o<45?"Long off":o<90?"Cover":o<135?"Point":"Third man";
+  o=-o;return o<45?"Long on":o<90?"Midwicket":o<135?"Square leg":"Fine leg";}
+function isLegal(b){return b.extra!=="Wide"&&b.extra!=="No-ball";}
+function batRuns(b){return(b.extra==="Wide"||b.extra==="Bye"||b.extra==="Leg-bye")?0:b.runs;}
+function bowlRuns(b){return((b.extra==="Bye"||b.extra==="Leg-bye")?0:b.runs)+((b.extra==="Wide"||b.extra==="No-ball")?1:0);}
+function totalRuns(b){return b.runs+((b.extra==="Wide"||b.extra==="No-ball")?1:0);}
+function isWkt(b){return b.wicket&&b.wicket!=="Not out";}
+function oversStr(legal){return Math.floor(legal/6)+"."+(legal%6);}
+function outcomeColor(b){return isWkt(b)?"var(--wkt)":b.runs>=6?"var(--six)":b.runs>=4?"var(--four)":totalRuns(b)>0?"var(--run)":"var(--dot)";}
+function nextNumber(balls,inn){var last=null;for(var i=0;i<balls.length;i++){if(balls[i].inn===inn)last=balls[i];}
+  if(!last)return{over:0,ball:1};
+  if(!isLegal(last))return{over:last.over,ball:last.ball};
+  return last.ball>=6?{over:last.over+1,ball:1}:{over:last.over,ball:last.ball+1};}
+function fmtT(t,dec){if(!isFinite(t))t=0;var m=Math.floor(t/60),s=t-m*60;var ss=dec?s.toFixed(1):String(Math.floor(s));if(s<10)ss="0"+ss;return m+":"+ss;}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+
+/* ---------- state ---------- */
+var S={matches:[],cur:null};
+var F=null, editing=null, filt={batter:"",bowler:"",length:"",result:""};
+function blankForm(keep){var m=match();var k=keep||{};var inn=k.inn||1;var n=nextNumber(m?m.balls:[],inn);
+  return{inn:inn,over:n.over,ball:n.ball,bowler:k.bowler||"",batter:k.batter||"",btype:k.btype||"Pace",hand:k.hand||"Right",
+    px:null,py:null,ftoss:false,shot:"",wx:null,wy:null,runs:0,extra:"None",wicket:"Not out",control:"Yes",note:""};}
+function match(){for(var i=0;i<S.matches.length;i++)if(S.matches[i].id===S.cur)return S.matches[i];return S.matches[0]||null;}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}}
+function sample(){
+  var rows=[ // x, d, wx, wy, shot, runs, extra, wicket, control, bowler, batter, type
+   [-.25,7,-.2,.5,"Defence",0,"None","Not out","Yes","Bowler X","Batter A","Pace"],
+   [-.3,4.5,-.75,.45,"Drive",4,"None","Not out","Yes","Bowler X","Batter A","Pace"],
+   [-.1,7.4,-.1,.2,"Defence",0,"None","Not out","Yes","Bowler X","Batter A","Pace"],
+   [.15,11,.7,-.2,"Pull",1,"None","Not out","Yes","Bowler X","Batter A","Pace"],
+   [-.35,6.8,-.3,-.6,"Edge",0,"None","Not out","No","Bowler X","Batter B","Pace"],
+   [-.7,8,null,null,"Leave",0,"Wide","Not out","Yes","Bowler X","Batter B","Pace"],
+   [-.2,7.2,-.5,.1,"Cut",2,"None","Not out","Yes","Bowler X","Batter B","Pace"],
+   [0,5,.3,.8,"Drive",1,"None","Not out","Yes","Bowler Y","Batter B","Spin"],
+   [-.15,6.5,-.2,.3,"Defence",0,"None","Not out","Yes","Bowler Y","Batter A","Spin"],
+   [.1,4,.8,.3,"Sweep",4,"None","Not out","Yes","Bowler Y","Batter A","Spin"],
+   [-.1,6.2,.1,.15,"Defence",0,"None","Not out","No","Bowler Y","Batter A","Spin"],
+   [-.05,5.5,.25,.9,"Drive",6,"None","Not out","Yes","Bowler Y","Batter A","Spin"],
+   [-.12,6.9,0,.1,"Defence",0,"None","Bowled","No","Bowler Y","Batter A","Spin"],
+   [-.3,7.5,-.3,.3,"Defence",0,"None","Not out","Yes","Bowler X","Batter B","Pace"],
+   [.2,10.5,.6,-.5,"Pull",4,"None","Not out","Yes","Bowler X","Batter B","Pace"],
+   [-.28,1.4,-.1,.4,"Drive",1,"None","Not out","Yes","Bowler X","Batter B","Pace"],
+   [-.33,7.1,-.35,-.55,"Edge",0,"None","Caught","No","Bowler X","Batter C","Pace"],
+   [-.2,7.8,-.2,.2,"Defence",0,"None","Not out","Yes","Bowler X","Batter D","Pace"],
+   [.05,6.3,.5,.2,"Flick",2,"None","Not out","Yes","Bowler X","Batter D","Pace"]];
+  var m={id:uid(),name:"Example match (sample data)",sample:true,balls:[]};
+  rows.forEach(function(r,i){var n=nextNumber(m.balls,1);
+    m.balls.push({id:uid()+i,t:20+i*38,inn:1,over:n.over,ball:n.ball,bowler:r[9],batter:r[10],btype:r[11],hand:"Right",
+      px:r[0],py:r[1],line:lineOf(r[0],"Right"),length:lengthOf(r[1]),ftoss:false,shot:r[4],wx:r[2],wy:r[3],
+      zone:r[2]==null?"":zoneOf(r[2],r[3],"Right"),runs:r[5],extra:r[6],wicket:r[7],control:r[8],note:""});});
+  return m;}
+function load(){try{var j=JSON.parse(localStorage.getItem(KEY)||"null");if(j&&j.matches&&j.matches.length){S=j;}}catch(e){}
+  if(!S.matches.length){var m=sample();S.matches=[m];S.cur=m.id;}
+  if(!match())S.cur=S.matches[0].id; else S.cur=match().id;}
+
+/* ---------- toast ---------- */
+var toastTimer=null;
+function toast(msg,actLabel,act){$("toastMsg").textContent=msg;var b=$("toastAct");
+  if(actLabel){b.hidden=false;b.textContent=actLabel;b.onclick=function(){hideToast();act();};}else{b.hidden=true;}
+  $("toast").style.display="flex";clearTimeout(toastTimer);toastTimer=setTimeout(hideToast,actLabel?6000:2600);}
+function hideToast(){$("toast").style.display="none";}
+
+/* ---------- SVG diagrams ---------- */
+function pitchSVG(dots,tap){ // 200 x 320, stumps at top, 60px per metre across, 22px per metre down
+  var bands=[[0,2,"Yorker","#3a4a2a"],[2,6,"Full","#4a5a30"],[6,8,"Good","#5c6b34"],[8,10,"Back of length","#4a5a30"],[10,14,"Short","#3a4a2a"]];
+  var s='<svg viewBox="0 0 200 320" class="'+(tap?"tap":"")+'" role="img" aria-label="Pitch map"><rect width="200" height="320" fill="#13201a"/>';
+  bands.forEach(function(b){var y=12+b[0]*22,h=(b[1]-b[0])*22;
+    s+='<rect x="9" y="'+y+'" width="182" height="'+h+'" fill="'+b[3]+'"/><text x="187" y="'+(y+h-5)+'" text-anchor="end" font-size="10" fill="#dfe8cf" opacity=".75" font-family="Barlow,sans-serif">'+b[2]+'</text>';});
+  s+='<line x1="9" x2="191" y1="38.8" y2="38.8" stroke="#f3f0df" stroke-width="1.5"/>';
+  [-0.11,0,0.11].forEach(function(x){s+='<rect x="'+(100+x*60-1.5)+'" y="4" width="3" height="10" fill="#f3f0df"/>';});
+  s+='<line x1="100" x2="100" y1="14" y2="320" stroke="#f3f0df" stroke-width=".6" stroke-dasharray="3 5" opacity=".4"/>';
+  dots.forEach(function(d){if(d.px==null)return;var cx=100+d.px*60,cy=12+d.py*22;
+    s+='<circle cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="'+(d.big?8:5.5)+'" fill="'+d.c+'" stroke="#0d1210" stroke-width="1.2"/>';});
+  return s+'</svg>';}
+function wagonSVG(lines,tap){ // 240 x 240, batter at centre, bowler toward bottom
+  var s='<svg viewBox="0 0 240 240" class="'+(tap?"tap":"")+'" role="img" aria-label="Wagon wheel"><circle cx="120" cy="120" r="112" fill="#1f3a2a" stroke="#f3f0df" stroke-width="1.5"/>';
+  s+='<circle cx="120" cy="120" r="50" fill="none" stroke="#f3f0df" stroke-width=".7" stroke-dasharray="3 4" opacity=".5"/>';
+  for(var i=0;i<4;i++){var a=i*Math.PI/4;s+='<line x1="'+(120-112*Math.sin(a))+'" y1="'+(120-112*Math.cos(a))+'" x2="'+(120+112*Math.sin(a))+'" y2="'+(120+112*Math.cos(a))+'" stroke="#f3f0df" stroke-width=".5" opacity=".18"/>';}
+  s+='<rect x="114" y="116" width="12" height="40" fill="#b9a96a" opacity=".9"/>';
+  s+='<text x="120" y="226" text-anchor="middle" font-size="10" fill="#dfe8cf" opacity=".7" font-family="Barlow,sans-serif">Bowler\'s end</text>';
+  lines.forEach(function(l){if(l.wx==null)return;var x=120+l.wx*110,y=120+l.wy*110;
+    s+='<line x1="120" y1="120" x2="'+x.toFixed(1)+'" y2="'+y.toFixed(1)+'" stroke="'+l.c+'" stroke-width="'+(l.big?3:2)+'" stroke-linecap="round"/>'+
+       '<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="'+(l.big?6:3.5)+'" fill="'+l.c+'" stroke="#0d1210" stroke-width="1"/>';});
+  return s+'</svg>';}
+function svgPoint(svg,e,w,h){var r=svg.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*w,y:(e.clientY-r.top)/r.height*h};}
+
+/* ---------- form ---------- */
+function chipHTML(g,cls){return OPT[g].map(function(v){return'<button type="button" class="chip '+(cls||"")+'" data-g="'+g+'" data-v="'+esc(v)+'">'+esc(v)+'</button>';}).join("");}
+function buildForm(){["btype","hand","ftoss","shot","extra","wicket","control"].forEach(function(g){$("g-"+g).innerHTML=chipHTML(g);});
+  $("g-runs").innerHTML=chipHTML("runs","runs");
+  $("innChips").innerHTML='<button type="button" class="chip" data-g="inn" data-v="1">1</button><button type="button" class="chip" data-g="inn" data-v="2">2</button>';}
+function formVal(g){if(g==="runs")return String(F.runs);if(g==="inn")return String(F.inn);if(g==="ftoss")return F.ftoss?"Full toss":"";return F[g];}
+function paintForm(){
+  document.querySelectorAll("#pane-tag .chip").forEach(function(c){c.classList.toggle("on",formVal(c.dataset.g)===c.dataset.v);});
+  $("ballno").textContent=F.over+"."+F.ball;
+  $("editLbl").textContent=editing?"Editing ball":"Next ball";
+  $("saveBall").textContent=editing?"Save changes":"Save ball";$("cancelEdit").hidden=!editing;
+  if($("bowler").value!==F.bowler)$("bowler").value=F.bowler;
+  if($("batter").value!==F.batter)$("batter").value=F.batter;
+  if($("note").value!==F.note)$("note").value=F.note;
+  $("pitchIn").innerHTML=pitchSVG(F.px==null?[]:[{px:F.px,py:F.py,c:"var(--accent)",big:true}],true);
+  $("wagonIn").innerHTML=wagonSVG(F.wx==null?[]:[{wx:F.wx,wy:F.wy,c:"var(--accent)",big:true}],true);
+  $("pitchCap").textContent=F.px==null?"Not set":(F.ftoss?"Full toss":lengthOf(F.py))+", "+lineOf(F.px,F.hand).toLowerCase();
+  $("wagonCap").textContent=F.wx==null?"Not set":zoneOf(F.wx,F.wy,F.hand);
+}
+function names(key){var m=match(),seen={},out=[];if(!m)return out;m.balls.forEach(function(b){if(b[key]&&!seen[b[key]]){seen[b[key]]=1;out.push(b[key]);}});return out.sort();}
+function paintLists(){["bowler","batter"].forEach(function(k){$(k+"s").innerHTML=names(k).map(function(n){return'<option value="'+esc(n)+'">';}).join("");});}
+
+function saveBall(){var m=match();if(!m)return;
+  F.bowler=$("bowler").value.trim();F.batter=$("batter").value.trim();F.note=$("note").value.trim();
+  var b={inn:F.inn,over:F.over,ball:F.ball,bowler:F.bowler,batter:F.batter,btype:F.btype,hand:F.hand,px:F.px,py:F.py,
+    line:F.px==null?"":lineOf(F.px,F.hand),length:F.ftoss?"Full toss":(F.px==null?"":lengthOf(F.py)),ftoss:F.ftoss,shot:F.shot,
+    wx:F.wx,wy:F.wy,zone:F.wx==null?"":zoneOf(F.wx,F.wy,F.hand),runs:F.runs,extra:F.extra,wicket:F.wicket,control:F.control,note:F.note};
+  if(editing){var old=m.balls.filter(function(x){return x.id===editing})[0];if(old){b.id=old.id;b.t=old.t;m.balls[m.balls.indexOf(old)]=b;}
+    editing=null;toast("Ball updated");}
+  else{b.id=uid();b.t=P[0].has?vid.currentTime:0;m.balls.push(b);toast("Saved "+b.over+"."+b.ball+(P[0].has?"":" (no video time: no video loaded)"));}
+  persist();F=blankForm(b);renderAll();}
+function editBall(id){var m=match();var b=m.balls.filter(function(x){return x.id===id})[0];if(!b)return;editing=id;
+  F={inn:b.inn,over:b.over,ball:b.ball,bowler:b.bowler,batter:b.batter,btype:b.btype,hand:b.hand,px:b.px,py:b.py,ftoss:!!b.ftoss,shot:b.shot,
+     wx:b.wx,wy:b.wy,runs:b.runs,extra:b.extra,wicket:b.wicket,control:b.control,note:b.note||""};showTab("tag");paintForm();}
+function deleteBall(id){var m=match();var i=-1;m.balls.forEach(function(x,k){if(x.id===id)i=k;});if(i<0)return;
+  var gone=m.balls.splice(i,1)[0];persist();if(!editing)F=blankForm(F);renderAll();
+  toast("Ball deleted","Undo",function(){m.balls.splice(i,0,gone);persist();if(!editing)F=blankForm(F);renderAll();});}
+
+/* ---------- filters, list, charts ---------- */
+function filtered(){var m=match();if(!m)return[];return m.balls.filter(function(b){
+  if(filt.batter&&b.batter!==filt.batter)return false;if(filt.bowler&&b.bowler!==filt.bowler)return false;
+  if(filt.length&&b.length!==filt.length)return false;
+  if(filt.result==="dots"&&totalRuns(b)!==0)return false;if(filt.result==="scoring"&&batRuns(b)===0)return false;
+  if(filt.result==="bound"&&b.runs<4)return false;if(filt.result==="wkts"&&!isWkt(b))return false;
+  if(filt.result==="false"&&b.control!=="No")return false;return true;});}
+function filterHTML(n){function sel(k,label,opts){return'<select id="f'+n+'-'+k+'" data-f="'+k+'" aria-label="'+label+'"><option value="">'+label+': all</option>'+
+    opts.map(function(o){var v=o.v||o,t=o.t||o;return'<option value="'+esc(v)+'"'+(filt[k]===v?" selected":"")+'>'+esc(t)+'</option>';}).join("")+'</select>';}
+  return sel("batter","Batter",names("batter"))+sel("bowler","Bowler",names("bowler"))+sel("length","Length",LENGTHS)+
+    sel("result","Result",[{v:"dots",t:"Dot balls"},{v:"scoring",t:"Scoring shots"},{v:"bound",t:"Boundaries"},{v:"wkts",t:"Wickets"},{v:"false",t:"Not in control"}]);}
+function resultPill(b){var t=isWkt(b)?"W":b.extra==="Wide"?"Wd"+(b.runs?"+"+b.runs:""):b.extra==="No-ball"?"Nb"+(b.runs?"+"+b.runs:""):
+    b.extra==="Bye"?b.runs+"b":b.extra==="Leg-bye"?b.runs+"lb":String(b.runs);
+  return'<span class="pill" style="background:'+outcomeColor(b)+'">'+t+'</span>';}
+var curBall=null;
+function renderList(){var bs=filtered(),m=match();
+  $("count1").textContent=bs.length+" of "+(m?m.balls.length:0)+" balls";
+  var h='<thead><tr><th>Ball</th><th>Result</th><th>Bowler to batter</th><th>Length / line</th><th>Shot</th><th>Time</th><th></th></tr></thead><tbody>';
+  if(!bs.length)h+='<tr><td colspan="7" class="sub">No balls match. Tag a ball on the Tag tab, or clear the filters.</td></tr>';
+  bs.forEach(function(b){h+='<tr class="ball'+(b.id===curBall?" cur":"")+'" data-id="'+b.id+'"><td class="num" style="font-size:18px">'+(b.inn===2?"2/":"")+b.over+"."+b.ball+'</td><td>'+resultPill(b)+
+    '</td><td>'+esc(b.bowler||"?")+' <span class="sub">to</span> '+esc(b.batter||"?")+(isWkt(b)?'<div class="sub">'+esc(b.wicket)+'</div>':"")+
+    '</td><td>'+esc(b.length||"")+'<div class="sub">'+esc(b.line||"")+'</div></td><td>'+esc(b.shot||"")+(b.zone?'<div class="sub">'+esc(b.zone)+'</div>':"")+
+    '</td><td class="num">'+fmtT(b.t)+'</td><td style="white-space:nowrap"><button class="btn small" data-act="edit" data-id="'+b.id+'">Edit</button> <button class="btn small danger" data-act="del" data-id="'+b.id+'" aria-label="Delete ball">✕</button></td></tr>';});
+  $("ballTable").innerHTML=h+'</tbody>';}
+function tally(bs){var bat={},bowl={},len={},tot={runs:0,legal:0,wk:0,dots:0,ctrlY:0,ctrlN:0};
+  bs.forEach(function(b){var L=isLegal(b),tr=totalRuns(b);tot.runs+=tr;if(L)tot.legal++;if(isWkt(b))tot.wk++;if(L&&tr===0)tot.dots++;
+    if(b.extra!=="Wide"){if(b.control==="No")tot.ctrlN++;else tot.ctrlY++;}
+    var a=bat[b.batter||"?"]||(bat[b.batter||"?"]={r:0,b:0,d:0,f:0,s:0,out:"",n:0});
+    if(b.extra!=="Wide"){a.b++;a.r+=batRuns(b);if(batRuns(b)===0)a.d++;if(batRuns(b)===4)a.f++;if(batRuns(b)===6)a.s++;if(b.control==="No")a.n++;}
+    if(isWkt(b))a.out=b.wicket;
+    var o=bowl[b.bowler||"?"]||(bowl[b.bowler||"?"]={l:0,r:0,w:0,d:0,x:0});
+    o.r+=bowlRuns(b);if(L){o.l++;if(bowlRuns(b)===0)o.d++;}else o.x++;if(isWkt(b)&&b.wicket!=="Run out")o.w++;
+    if(b.length){var g=len[b.length]||(len[b.length]={n:0,r:0,w:0,d:0});g.n++;g.r+=tr;if(isWkt(b))g.w++;if(tr===0)g.d++;}});
+  return{bat:bat,bowl:bowl,len:len,tot:tot};}
+function pct(a,b){return b?Math.round(a/b*100)+"%":"–";}
+function renderCharts(){var bs=filtered(),T=tally(bs),t=T.tot;
+  $("tiles").innerHTML=[[t.runs+"/"+t.wk,"Runs / wkts"],[oversStr(t.legal),"Overs"],[t.legal?(t.runs/(t.legal/6)).toFixed(2):"–","Run rate"],[pct(t.ctrlY,t.ctrlY+t.ctrlN),"In control"]]
+    .map(function(x){return'<div class="tile"><b>'+x[0]+'</b><span>'+x[1]+'</span></div>';}).join("");
+  $("pitchOut").innerHTML=pitchSVG(bs.map(function(b){return{px:b.px,py:b.py,c:outcomeColor(b)};}),false);
+  $("wagonOut").innerHTML=wagonSVG(bs.filter(function(b){return b.wx!=null&&batRuns(b)>0||b.wx!=null&&isWkt(b);}).map(function(b){return{wx:b.wx,wy:b.wy,c:outcomeColor(b)};}),false);
+  var h='<thead><tr><th>Length</th><th class="n">Balls</th><th class="n">Runs</th><th class="n">Dot %</th><th class="n">Wkts</th></tr></thead><tbody>';
+  LENGTHS.forEach(function(L){var g=T.len[L];if(g)h+='<tr><td>'+L+'</td><td class="n">'+g.n+'</td><td class="n">'+g.r+'</td><td class="n">'+pct(g.d,g.n)+'</td><td class="n">'+g.w+'</td></tr>';});
+  $("lenTable").innerHTML=h+(Object.keys(T.len).length?"":'<tr><td colspan="5" class="sub">No pitch positions tagged yet.</td></tr>')+'</tbody>';
+  h='<thead><tr><th>Batter</th><th class="n">Runs</th><th class="n">Balls</th><th class="n">SR</th><th class="n">4s</th><th class="n">6s</th><th class="n">Dot %</th><th class="n">False shots</th></tr></thead><tbody>';
+  Object.keys(T.bat).forEach(function(k){var a=T.bat[k];h+='<tr><td>'+esc(k)+(a.out?'<div class="sub">'+esc(a.out)+'</div>':"")+'</td><td class="n">'+a.r+'</td><td class="n">'+a.b+'</td><td class="n">'+(a.b?(a.r/a.b*100).toFixed(0):"–")+'</td><td class="n">'+a.f+'</td><td class="n">'+a.s+'</td><td class="n">'+pct(a.d,a.b)+'</td><td class="n">'+pct(a.n,a.b)+'</td></tr>';});
+  $("batTable").innerHTML=h+'</tbody>';
+  h='<thead><tr><th>Bowler</th><th class="n">Overs</th><th class="n">Runs</th><th class="n">Wkts</th><th class="n">Econ</th><th class="n">Dot %</th><th class="n">Wd/Nb</th></tr></thead><tbody>';
+  Object.keys(T.bowl).forEach(function(k){var o=T.bowl[k];h+='<tr><td>'+esc(k)+'</td><td class="n">'+oversStr(o.l)+'</td><td class="n">'+o.r+'</td><td class="n">'+o.w+'</td><td class="n">'+(o.l?(o.r/(o.l/6)).toFixed(2):"–")+'</td><td class="n">'+pct(o.d,o.l)+'</td><td class="n">'+o.x+'</td></tr>';});
+  $("bowlTable").innerHTML=h+'</tbody>';}
+function renderHeader(){var m=match();
+  $("matchSel").innerHTML=S.matches.map(function(x){return'<option value="'+x.id+'"'+(x.id===S.cur?" selected":"")+'>'+esc(x.name)+'</option>';}).join("");
+  var t=tally(m?m.balls:[]).tot;$("score").innerHTML=t.runs+"/"+t.wk+'<small>'+oversStr(t.legal)+' ov</small>';
+  $("banner").hidden=!(m&&m.sample);}
+function renderAll(){renderHeader();paintLists();$("filters1").innerHTML=filterHTML(1);$("filters2").innerHTML=filterHTML(2);paintForm();renderList();renderCharts();}
+function showTab(t){document.querySelectorAll(".tab").forEach(function(b){b.classList.toggle("on",b.dataset.tab===t);});
+  document.querySelectorAll(".pane").forEach(function(p){p.classList.toggle("on",p.id==="pane-"+t);});}
+
+/* ---------- video ---------- */
+var FRAME=1/30,act=0,linked=false,layout="single",rate=1,tool="none",color="#ffd84a",queue=null,clipEnd=null,loopIn=null,loopOut=null,loopOn=false,marks={rel:null,arr:null};
+function mk(i){var st=$("stage"+i);var p={i:i,stage:st,zoomer:st.querySelector(".zoomer"),vid:st.querySelector("video"),cv:st.querySelector("canvas"),empty:st.querySelector(".empty"),shapes:[],cur:null,zoom:1,panX:0,panY:0,has:false,flip:false,pan:null,pts:{},pinch:null,tap:null};
+  p.ctx=p.cv.getContext("2d");return p;}
+var P=[mk(0),mk(1)],vid=P[0].vid;
+function A(){return P[act];}
+function targets(){if(linked&&layout!=="single"){var t=P.filter(function(p){return p.has;});if(t.length)return t;}return A().has?[A()]:[];}
+function needVideo(){if(P[0].has)return true;toast("Load video 1 first");return false;}
+function needAct(){if(targets().length)return true;toast("Load a video first");return false;}
+function loadFile(p,f){if(!f)return;try{if(p.vid.src)URL.revokeObjectURL(p.vid.src);}catch(e){}
+  p.vid.src=URL.createObjectURL(f);p.has=true;p.empty.style.display="none";p.vid.load();p.vid.playbackRate=rate;
+  if(p.i===1&&layout==="single")setLayout("split");act=p.i;paintToolbar();}
+function seekP(p,t){var d=p.vid.duration;p.vid.currentTime=Math.max(0,Math.min(isFinite(d)&&d?d:1e9,t));}
+function playP(p){p.vid.playbackRate=rate;var r=p.vid.play();if(r&&r.catch)r.catch(function(){});}
+function togglePlay(){if(!needAct())return;var ts=targets(),any=ts.some(function(p){return p.vid.paused;});ts.forEach(function(p){any?playP(p):p.vid.pause();});}
+function step(d){if(!needAct())return;stopQueue();targets().forEach(function(p){p.vid.pause();seekP(p,p.vid.currentTime+d);});}
+var lastT="";
+function paintTime(){var v=A().vid,t=fmtT(v.currentTime,true)+" / "+fmtT(v.duration||0);
+  if(t!==lastT){lastT=t;$("time").textContent=t;if(v.duration&&document.activeElement!==$("seek"))$("seek").value=Math.round(v.currentTime/v.duration*1000);}
+  var ts=targets(),lab=(!ts.length||ts.some(function(p){return p.vid.paused;}))?"Play":"Pause";if($("play").textContent!==lab)$("play").textContent=lab;}
+function stopQueue(){queue=null;clipEnd=null;$("stopAll").hidden=true;}
+function playClip(b){curBall=b.id;var pre=+$("pre").value;seekP(P[0],b.t-pre);clipEnd=b.t+2;playP(P[0]);renderList();}
+function tick(){paintTime();
+  if(clipEnd!=null&&vid.currentTime>=clipEnd){clipEnd=null;
+    if(queue&&queue.length){playClip(queue.shift());}else{vid.pause();if(queue){stopQueue();toast("Finished all clips");}}}
+  if(loopOn&&loopIn!=null&&loopOut!=null){var v=A().vid;if(!v.paused&&v.currentTime>=loopOut){var d=v.currentTime-loopIn;targets().forEach(function(p){seekP(p,p.vid.currentTime-d);});}}
+  requestAnimationFrame(tick);}
+P.forEach(function(p){p.vid.addEventListener("error",function(){if(p.has)toast("This video format cannot be played here. Try an MP4 file.");});});
+function applyZoom(p){var w=p.stage.clientWidth,h=p.stage.clientHeight;
+  p.panX=Math.min(0,Math.max(w-w*p.zoom,p.panX));p.panY=Math.min(0,Math.max(h-h*p.zoom,p.panY));
+  p.zoomer.style.transform="translate("+p.panX+"px,"+p.panY+"px) scale("+p.zoom+")";}
+function setZoom(p,z){var w=p.stage.clientWidth,h=p.stage.clientHeight;var cx=(w/2-p.panX)/p.zoom,cy=(h/2-p.panY)/p.zoom;
+  p.zoom=z;p.panX=w/2-cx*z;p.panY=h/2-cy*z;applyZoom(p);sizeCanvas(p);}
+function refit(){P.forEach(function(p){applyZoom(p);sizeCanvas(p);});}
+function setLayout(l){layout=l;$("stages").className="stages "+l;if(l==="single"){act=0;linked=false;}refit();paintToolbar();}
+function setPanel(on){S.panel=!!on;document.body.classList.toggle("solo",!on);$("panelTog").textContent=on?"Hide tagging & charts":"Show tagging & charts";persist();refit();}
+
+/* ---------- drawing ---------- */
+function sizeCanvas(p){var d=Math.min(2,window.devicePixelRatio||1)*Math.min(p.zoom,2);p.cv.width=Math.max(2,Math.round(p.stage.clientWidth*d));p.cv.height=Math.max(2,Math.round(p.stage.clientHeight*d));redraw(p);}
+function drawShapes(ctx,W,H,list){ctx.lineCap="round";ctx.lineJoin="round";
+  list.forEach(function(s){ctx.strokeStyle=s.c;ctx.fillStyle=s.c;ctx.lineWidth=Math.max(2,W/320);var p=s.p;if(!p.length)return;
+    var x0=p[0][0]*W,y0=p[0][1]*H,l=p[p.length-1],x1=l[0]*W,y1=l[1]*H;ctx.beginPath();
+    if(s.k==="angle"){ctx.moveTo(x0,y0);for(var j=1;j<p.length;j++)ctx.lineTo(p[j][0]*W,p[j][1]*H);ctx.stroke();
+      p.forEach(function(q){ctx.beginPath();ctx.arc(q[0]*W,q[1]*H,ctx.lineWidth*1.6,0,Math.PI*2);ctx.fill();});
+      if(p.length===3){var vx=p[1][0]*W,vy=p[1][1]*H,a1=Math.atan2(y0-vy,x0-vx),a2=Math.atan2(y1-vy,x1-vx),dg=Math.abs(a1-a2)*180/Math.PI;if(dg>180)dg=360-dg;
+        var txt=dg.toFixed(0)+"°";ctx.font="700 "+Math.round(W/28)+"px sans-serif";ctx.lineWidth=Math.max(3,W/200);ctx.strokeStyle="#000";ctx.strokeText(txt,vx+W/60,vy-H/40);ctx.fillText(txt,vx+W/60,vy-H/40);}
+      return;}
+    if(s.k==="pen"){ctx.moveTo(x0,y0);for(var i=1;i<p.length;i++)ctx.lineTo(p[i][0]*W,p[i][1]*H);ctx.stroke();}
+    else if(s.k==="circle"){ctx.ellipse((x0+x1)/2,(y0+y1)/2,Math.abs(x1-x0)/2,Math.abs(y1-y0)/2,0,0,Math.PI*2);ctx.stroke();}
+    else{ctx.moveTo(x0,y0);ctx.lineTo(x1,y1);ctx.stroke();
+      if(s.k==="arrow"){var a=Math.atan2(y1-y0,x1-x0),n=ctx.lineWidth*5;ctx.beginPath();ctx.moveTo(x1,y1);
+        ctx.lineTo(x1-n*Math.cos(a-.45),y1-n*Math.sin(a-.45));ctx.lineTo(x1-n*Math.cos(a+.45),y1-n*Math.sin(a+.45));ctx.closePath();ctx.fill();}}});}
+function redraw(p){p.ctx.clearRect(0,0,p.cv.width,p.cv.height);drawShapes(p.ctx,p.cv.width,p.cv.height,p.shapes.concat(p.cur?[p.cur]:[]));}
+function norm(p,e){var r=p.cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}
+function pinchGeo(p){var ids=Object.keys(p.pts),a=p.pts[ids[0]],b=p.pts[ids[1]],r=p.stage.getBoundingClientRect();
+  return{d:Math.hypot(a.x-b.x,a.y-b.y)||1,mx:(a.x+b.x)/2-r.left,my:(a.y+b.y)/2-r.top};}
+P.forEach(function(p){
+  p.cv.addEventListener("pointerdown",function(e){if(!p.has)return;
+    try{p.cv.setPointerCapture(e.pointerId);}catch(x){}
+    p.pts[e.pointerId]={x:e.clientX,y:e.clientY};var n=Object.keys(p.pts).length,sel=false;
+    if(act!==p.i){act=p.i;paintToolbar();sel=true;}
+    if(n===2){if(!(p.cur&&p.cur.k==="angle"))p.cur=null;p.pan=null;p.tap=null;var g=pinchGeo(p);
+      p.pinch={d:g.d,z:p.zoom,cx:(g.mx-p.panX)/p.zoom,cy:(g.my-p.panY)/p.zoom};redraw(p);return;}
+    if(n>2||sel)return;
+    if(tool==="none"){p.tap={x:e.clientX,y:e.clientY,moved:false,px:p.panX,py:p.panY};return;}
+    if(tool==="move"){p.pan={x:e.clientX-p.panX,y:e.clientY-p.panY};return;}
+    var q=norm(p,e);
+    if(tool==="angle"){if(!p.cur||p.cur.k!=="angle")p.cur={k:"angle",c:color,p:[q]};else p.cur.p.push(q);
+      if(p.cur.p.length===3){p.shapes.push(p.cur);p.cur=null;}redraw(p);return;}
+    p.cur={k:tool,c:color,p:[q]};});
+  p.cv.addEventListener("pointermove",function(e){if(p.pts[e.pointerId])p.pts[e.pointerId]={x:e.clientX,y:e.clientY};
+    if(p.pinch){if(Object.keys(p.pts).length>=2){var g=pinchGeo(p),z=Math.max(1,Math.min(8,p.pinch.z*g.d/p.pinch.d));
+        p.zoom=z;p.panX=g.mx-p.pinch.cx*z;p.panY=g.my-p.pinch.cy*z;applyZoom(p);}return;}
+    if(p.tap){var dx=e.clientX-p.tap.x,dy=e.clientY-p.tap.y;if(!p.tap.moved&&Math.hypot(dx,dy)>8)p.tap.moved=true;
+      if(p.tap.moved&&p.zoom>1){p.panX=p.tap.px+dx;p.panY=p.tap.py+dy;applyZoom(p);}return;}
+    if(p.pan){p.panX=e.clientX-p.pan.x;p.panY=e.clientY-p.pan.y;applyZoom(p);return;}
+    if(!p.cur||p.cur.k==="angle")return;var q=norm(p,e);if(p.cur.k==="pen")p.cur.p.push(q);else p.cur.p[1]=q;redraw(p);});
+  function end(e){delete p.pts[e.pointerId];
+    if(p.pinch){if(Object.keys(p.pts).length<2){p.pinch=null;p.zoom=Math.round(p.zoom*100)/100;if(p.zoom<1.05){p.zoom=1;p.panX=0;p.panY=0;}applyZoom(p);sizeCanvas(p);paintToolbar();}return;}
+    if(p.tap){var t=p.tap;p.tap=null;if(!t.moved){stopQueue();togglePlay();}return;}
+    p.pan=null;if(p.cur&&p.cur.k!=="angle"){if(p.cur.p.length>1)p.shapes.push(p.cur);p.cur=null;redraw(p);}}
+  p.cv.addEventListener("pointerup",end);p.cv.addEventListener("pointercancel",end);});
+var TOOLS=[["none","Off"],["move","Move"],["line","Line"],["arrow","Arrow"],["circle","Circle"],["angle","Angle"],["pen","Pen"]],COLORS=["#ffd84a","#ff5a4d","#4fd1ff","#ffffff"];
+function btns(list,attr,cur){return list.map(function(t){return'<button class="btn small'+(String(cur)===String(t[0])?" on":"")+'" data-'+attr+'="'+t[0]+'">'+t[1]+'</button>';}).join("");}
+function paintToolbar(){
+  $("tools").innerHTML=btns(TOOLS,"tool",tool);
+  $("colors").innerHTML=COLORS.map(function(c){return'<button class="sw'+(color===c?" on":"")+'" data-color="'+c+'" style="background:'+c+'" aria-label="Colour '+c+'"></button>';}).join("");
+  $("speeds").innerHTML=btns([[0.125,"⅛×"],[0.25,"¼×"],[0.5,"½×"],[1,"1×"],[2,"2×"]],"speed",rate);
+  $("zooms").innerHTML=btns([[1,"1×"],[2,"2×"],[3,"3×"],[4,"4×"]],"zoom",A().zoom);
+  $("layouts").innerHTML=btns([["single","One video"],["split","Side by side"],["overlay","Overlay"]],"layout",layout);
+  $("ctls").innerHTML=btns([["0","Video 1"],["1","Video 2"],["both","Both together"]],"ctl",linked?"both":act);
+  $("ctlWrap").hidden=layout==="single";$("ovWrap").hidden=layout!=="overlay";
+  P.forEach(function(p){p.stage.classList.toggle("act",p.i===act);});
+  $("flip").classList.toggle("on",A().flip);
+  $("loopTog").classList.toggle("on",loopOn);$("loopTog").textContent=loopOn?"Repeat on":"Repeat off";
+  $("loopLbl").textContent=(loopIn==null?"–":fmtT(loopIn,true))+" to "+(loopOut==null?"–":fmtT(loopOut,true));
+  var r=marks.rel,a=marks.arr,o="Mark both frames to see the speed";
+  if(r!=null&&a!=null){if(a>r){var d=parseFloat($("dist").value)||17.68,dt=a-r;o=dt.toFixed(2)+" s, about "+Math.round(d/dt*3.6)+" km/h (estimate)";}else o="The batter mark must be after the release mark";}
+  else if(r!=null)o="Release marked at "+fmtT(r,true)+". Now mark at batter";
+  $("spdOut").textContent=o;}
+function snapshot(){var two=layout==="split",list=(layout==="single"?[P[0]]:P).filter(function(p){return p.has;});
+  if(!list.length){toast("Load a video first");return;}
+  var H=720,st0=list[0].stage,W=Math.max(320,Math.round(H*(st0.clientWidth||16)/(st0.clientHeight||9))),G=8,c=document.createElement("canvas");c.width=two?W*2+G:W;c.height=H;var x=c.getContext("2d"),ov=(+$("ovRange").value||0)/100;
+  try{x.fillStyle="#000";x.fillRect(0,0,c.width,H);
+    list.forEach(function(p){var v=p.vid,ox=two?p.i*(W+G):0,k=W/(p.stage.clientWidth||W);
+      x.save();x.beginPath();x.rect(ox,0,W,H);x.clip();x.globalAlpha=(layout==="overlay"&&p.i===1)?ov:1;
+      x.translate(ox+p.panX*k,p.panY*k);x.scale(p.zoom,p.zoom);
+      if(v.videoWidth){var s=Math.min(W/v.videoWidth,H/v.videoHeight),dw=v.videoWidth*s,dh=v.videoHeight*s;
+        x.save();if(p.flip){x.translate(W,0);x.scale(-1,1);}x.drawImage(v,(W-dw)/2,(H-dh)/2,dw,dh);x.restore();}
+      x.globalAlpha=1;drawShapes(x,W,H,p.shapes);x.restore();});
+    c.toBlob(function(b){if(b)saveFile("screenshot-"+fmtT(A().vid.currentTime,true).replace(/[:.]/g,"-")+".png",b);else toast("Could not make the screenshot");},"image/png");
+  }catch(e){toast("Could not make the screenshot");}}
+
+/* ---------- export ---------- */
+function csv(){var m=match();var cols=["innings","over","ball","video_time_s","bowler","bowling","batter","hand","length","line","shot","zone","runs","extra","wicket","in_control","pitch_x_m","pitch_dist_m","note"];
+  var rows=[cols.join(",")];function q(v){v=v==null?"":String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+  m.balls.forEach(function(b){rows.push([b.inn,b.over,b.ball,(b.t||0).toFixed(1),b.bowler,b.btype,b.batter,b.hand,b.length,b.line,b.shot,b.zone,b.runs,b.extra,b.wicket,b.control,
+    b.px==null?"":b.px.toFixed(2),b.py==null?"":b.py.toFixed(2),b.note].map(q).join(","));});return rows.join("\n");}
+function fileName(ext){var m=match();return(m.name.replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"-")||"match")+"."+ext;}
+var dl=null;
+function saveFile(name,data){if(!dl){try{var blob=data instanceof Blob?data:new Blob([data],{type:/\.csv$/.test(name)?"text/csv":"application/json"});
+    var u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(function(){URL.revokeObjectURL(u);},1000);toast("Saved "+name);}catch(e){toast("Could not save the file here.");}return;}
+  dl.save({filename:name,data:data}).then(function(){toast("Saved "+name);},function(err){
+    toast(err&&err.code==="declined"?"Save cancelled":"Could not save the file here.");});}
+function copyText(t){var done=function(){toast("Copied. Paste it into Excel or Google Sheets.");};
+  var fallback=function(){var ta=document.createElement("textarea");ta.value=t;document.body.appendChild(ta);ta.select();var ok=false;try{ok=document.execCommand("copy");}catch(e){}document.body.removeChild(ta);ok?done():toast("Copy was blocked in this view");};
+  try{navigator.clipboard.writeText(t).then(done,fallback);}catch(e){fallback();}}
+
+/* ---------- events ---------- */
+document.querySelector(".tabs").addEventListener("click",function(e){var b=e.target.closest(".tab");if(b)showTab(b.dataset.tab);});
+$("pane-tag").addEventListener("click",function(e){var c=e.target.closest(".chip");if(c){var g=c.dataset.g,v=c.dataset.v;
+    if(g==="runs")F.runs=+v;else if(g==="ftoss")F.ftoss=!F.ftoss;
+    else if(g==="inn"){F.inn=+v;if(!editing){var n=nextNumber(match().balls,F.inn);F.over=n.over;F.ball=n.ball;}}
+    else if(g==="shot")F.shot=F.shot===v?"":v;else F[g]=v;
+    if(g==="wicket"&&v!=="Not out"&&v!=="Run out")F.runs=0;
+    paintForm();return;}
+  var sv=e.target.closest("svg.tap");if(sv){
+    if(sv.parentNode.id==="pitchIn"){var p=svgPoint(sv,e,200,320);F.px=Math.max(-1.5,Math.min(1.5,(p.x-100)/60));F.py=Math.max(0,Math.min(14,(p.y-12)/22));}
+    else{var w=svgPoint(sv,e,240,240);var x=(w.x-120)/110,y=(w.y-120)/110,r=Math.sqrt(x*x+y*y);if(r>1){x/=r;y/=r;}F.wx=x;F.wy=y;}
+    paintForm();}});
+["bowler","batter","note"].forEach(function(k){$(k).addEventListener("input",function(){F[k]=this.value;});});
+$("ballPlus").onclick=function(){if(F.ball>=6){F.over++;F.ball=1;}else F.ball++;paintForm();};
+$("ballMinus").onclick=function(){if(F.ball>1)F.ball--;else if(F.over>0){F.over--;F.ball=6;}paintForm();};
+$("saveBall").onclick=saveBall;
+$("cancelEdit").onclick=function(){editing=null;F=blankForm(F);paintForm();};
+$("ballTable").addEventListener("click",function(e){var a=e.target.closest("[data-act]");
+  if(a){a.dataset.act==="edit"?editBall(a.dataset.id):deleteBall(a.dataset.id);return;}
+  var tr=e.target.closest("tr.ball");if(!tr)return;var b=match().balls.filter(function(x){return x.id===tr.dataset.id})[0];
+  if(b&&needVideo()){stopQueue();playClip(b);}});
+function onFilter(e){var s=e.target.closest("select[data-f]");if(!s)return;filt[s.dataset.f]=s.value;
+  $("filters1").innerHTML=filterHTML(1);$("filters2").innerHTML=filterHTML(2);renderList();renderCharts();}
+$("filters1").addEventListener("change",onFilter);$("filters2").addEventListener("change",onFilter);
+$("playAll").onclick=function(){if(!needVideo())return;var bs=filtered();if(!bs.length){toast("No balls to play");return;}queue=bs.slice();$("stopAll").hidden=false;playClip(queue.shift());};
+$("stopAll").onclick=function(){stopQueue();vid.pause();};
+
+document.querySelector(".videocol").addEventListener("click",function(e){var b=e.target.closest("[data-load],[data-tool],[data-color],[data-speed],[data-zoom],[data-layout],[data-ctl]");if(!b)return;var d=b.dataset;
+  if(d.load){$("file"+d.load).click();return;}
+  if(d.tool){tool=d.tool;P.forEach(function(p){p.cur=null;redraw(p);});}
+  if(d.color){color=d.color;if(tool==="none"||tool==="move")tool="line";}
+  if(d.speed){rate=+d.speed;P.forEach(function(p){p.vid.playbackRate=rate;});}
+  if(d.zoom){setZoom(A(),+d.zoom);if(A().zoom>1&&tool==="none")tool="move";if(A().zoom===1&&tool==="move")tool="none";}
+  if(d.layout){setLayout(d.layout);return;}
+  if(d.ctl){if(d.ctl==="both")linked=true;else{linked=false;act=+d.ctl;}}
+  paintToolbar();});
+[0,1].forEach(function(i){$("file"+i).addEventListener("change",function(){loadFile(P[i],this.files[0]);this.value="";});});
+$("play").onclick=function(){stopQueue();togglePlay();};
+$("back5").onclick=function(){if(needAct()){stopQueue();targets().forEach(function(p){seekP(p,p.vid.currentTime-5);});}};
+$("fwd5").onclick=function(){if(needAct()){stopQueue();targets().forEach(function(p){seekP(p,p.vid.currentTime+5);});}};
+$("fback").onclick=function(){step(-FRAME);};
+$("ffwd").onclick=function(){step(FRAME);};
+$("seek").addEventListener("input",function(){var p=A();if(p.has&&p.vid.duration){stopQueue();var t=this.value/1000*p.vid.duration,d=t-p.vid.currentTime;
+  if(linked)targets().forEach(function(q){seekP(q,q.vid.currentTime+d);});else seekP(p,t);}});
+$("fps").addEventListener("change",function(){FRAME=1/(+this.value||30);});
+$("ovRange").addEventListener("input",function(){$("stages").style.setProperty("--ov",this.value/100);});
+$("flip").onclick=function(){var p=A();p.flip=!p.flip;p.vid.style.transform=p.flip?"scaleX(-1)":"";paintToolbar();};
+$("undo").onclick=function(){var p=A();p.cur=null;p.shapes.pop();redraw(p);};
+$("clear").onclick=function(){var p=A();p.cur=null;p.shapes=[];redraw(p);};
+$("loopIn").onclick=function(){if(needAct()){loopIn=A().vid.currentTime;paintToolbar();}};
+$("loopOut").onclick=function(){if(needAct()){loopOut=A().vid.currentTime;paintToolbar();}};
+$("loopTog").onclick=function(){if(!loopOn&&!(loopIn!=null&&loopOut!=null&&loopOut>loopIn)){toast("Set a start, then a later end, first");return;}loopOn=!loopOn;paintToolbar();};
+$("markRel").onclick=function(){if(needAct()){marks.rel=A().vid.currentTime;marks.arr=null;paintToolbar();}};
+$("markArr").onclick=function(){if(needAct()){marks.arr=A().vid.currentTime;paintToolbar();}};
+$("dist").addEventListener("input",paintToolbar);
+$("snap").onclick=snapshot;
+$("panelTog").onclick=function(){document.body.classList.remove("tools");setPanel(!S.panel);paintTools();};
+function paintTools(){var on=document.body.classList.contains("tools");$("toolsTog").textContent=on?"Hide tools":"Tools";$("toolsTog").classList.toggle("on",on);
+  $("drawer").style.bottom=document.body.classList.contains("solo")?document.querySelector(".bar").offsetHeight+"px":"";}
+$("toolsTog").onclick=function(){document.body.classList.toggle("tools");paintTools();};
+function fsFail(){toast("Full screen is not allowed in this view. Open the app from its home screen icon.");}
+$("fsBtn").onclick=function(){var el=document.documentElement;try{
+  if(document.fullscreenElement){document.exitFullscreen();return;}
+  if(!el.requestFullscreen){fsFail();return;}var r=el.requestFullscreen();if(r&&r.catch)r.catch(fsFail);}catch(e){fsFail();}};
+document.addEventListener("fullscreenchange",function(){$("fsBtn").textContent=document.fullscreenElement?"Exit full screen":"Full screen";setTimeout(refit,60);});
+window.addEventListener("resize",function(){refit();paintTools();});
+
+$("matchSel").addEventListener("change",function(){S.cur=this.value;editing=null;filt={batter:"",bowler:"",length:"",result:""};persist();F=blankForm();renderAll();});
+function newMatch(){var d=new Date();var m={id:uid(),name:"Match "+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"),balls:[]};
+  S.matches.push(m);S.cur=m.id;editing=null;filt={batter:"",bowler:"",length:"",result:""};persist();F=blankForm();renderAll();showTab("tag");startRename();}
+$("newMatch").onclick=$("startOwn").onclick=newMatch;
+function startRename(){var m=match(),sel=$("matchSel");var inp=document.createElement("input");inp.type="text";inp.id="renameBox";inp.value=m.name;inp.setAttribute("aria-label","Match name");
+  sel.hidden=true;sel.parentNode.insertBefore(inp,sel);inp.focus();inp.select();var done=false;
+  function fin(){if(done)return;done=true;var v=inp.value.trim();if(v){m.name=v;if(m.sample)m.sample=false;}inp.remove();sel.hidden=false;persist();renderHeader();}
+  inp.addEventListener("blur",fin);inp.addEventListener("keydown",function(e){if(e.key==="Enter")inp.blur();});}
+$("renameMatch").onclick=function(){if(!$("renameBox"))startRename();};
+var delArmed=null;
+$("delMatch").onclick=function(){var b=this;if(!delArmed){b.textContent="Tap again to delete";delArmed=setTimeout(function(){delArmed=null;b.textContent="Delete";},3000);return;}
+  clearTimeout(delArmed);delArmed=null;b.textContent="Delete";var m=match();S.matches=S.matches.filter(function(x){return x!==m;});
+  if(!S.matches.length)S.matches=[sample()];S.cur=S.matches[0].id;editing=null;persist();F=blankForm();renderAll();toast("Match deleted");};
+$("expCsv").onclick=function(){saveFile(fileName("csv"),csv());};
+$("expJson").onclick=function(){saveFile(fileName("json"),JSON.stringify({app:"crease",match:match()}));};
+$("copyCsv").onclick=function(){copyText(csv().replace(/,/g,"\t"));};
+$("impJson").onclick=function(){$("jsonFile").click();};
+$("jsonFile").addEventListener("change",function(){var f=this.files[0];this.value="";if(!f)return;var r=new FileReader();
+  r.onload=function(){try{var j=JSON.parse(r.result);var m=j.match||j;if(!m||!Array.isArray(m.balls))throw 0;m.id=uid();m.name=String(m.name||"Imported match");m.sample=false;
+      S.matches.push(m);S.cur=m.id;persist();F=blankForm();renderAll();toast("Backup opened: "+m.name);}catch(e){toast("That file is not a Crease backup");}};
+  r.readAsText(f);});
+document.addEventListener("keydown",function(e){if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;
+  if(e.key===" "){e.preventDefault();togglePlay();}else if(e.key==="ArrowRight"&&targets().length)step(FRAME);else if(e.key==="ArrowLeft"&&targets().length)step(-FRAME);});
+
+
+/* ---------- start ---------- */
+load();buildForm();F=blankForm();setPanel(!!S.panel);paintToolbar();renderAll();refit();paintTools();requestAnimationFrame(tick);
+try{if(window.claude&&window.claude.use){window.claude.use("downloads").then(function(d){dl=d||null;},function(){});}}catch(e){}
+})();
+</script>
+<script>
+// Installable app: offline cache, and ask the browser to keep saved tags.
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+}
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+</script>
+</body>
+</html>
