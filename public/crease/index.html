@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Crease Video Analyst</title>
+<meta name="theme-color" content="#17221d">
+<meta name="description" content="Ball-by-ball cricket video tagging, drawing and stats. Works offline.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Crease">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -776,6 +785,13 @@ document.addEventListener("keydown",function(e){if(/INPUT|TEXTAREA|SELECT/.test(
 load();buildForm();F=blankForm();setPanel(!!S.panel);paintToolbar();renderAll();refit();paintTools();requestAnimationFrame(tick);
 try{if(window.claude&&window.claude.use){window.claude.use("downloads").then(function(d){dl=d||null;},function(){});}}catch(e){}
 })();
+</script>
+<script>
+// Installable app: offline cache, and ask the browser to keep saved tags.
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+}
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
 </script>
 </body>
 </html>
