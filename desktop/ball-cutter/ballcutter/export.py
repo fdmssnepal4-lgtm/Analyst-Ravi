@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import csv
+import io
+import shutil
+import json
 import os
+import zipfile
 import re
 import tempfile
 from dataclasses import dataclass
@@ -22,6 +26,7 @@ class ExportOptions:
     reel: bool = True
     csv: bool = True
     edl: bool = True
+    by_player: bool = True  # also sort the clips into a folder per batter and per bowler
     over_naming: bool = False  # Over 3 Ball 4 instead of Ball 017
     balls_per_over: int = 6
     prefix: str = ""
@@ -113,7 +118,8 @@ def write_edl(path: str, src: str, clips: list[Clip], labels: list[str], fps: fl
         lines.append(f"{n:03d}  {reel:<8} V     C        {_tc(c.start, r)} {_tc(c.end, r)} "
                      f"{_tc(rec, r)} {_tc(rec + d, r)}")
         lines.append(f"* FROM CLIP NAME: {name}")
-        lines.append(f"* COMMENT: {lab}")
+        who = " ".join(x for x in (c.batter and f"batter {c.batter}", c.bowler and f"bowler {c.bowler}") if x)
+        lines.append(f"* COMMENT: {lab}" + (f" {who}" if who else ""))
         lines.append("")
         rec += d
     with open(path, "w", encoding="utf-8", newline="\r\n") as f:
@@ -128,43 +134,151 @@ def export_video(
     progress: Callable[[float, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> str:
-    """Export one video's enabled clips. Returns the folder written to."""
+    """Export one video's enabled clips. Returns the folder written to and, for each clip file made,
+    (path, clip) so the files can also be sorted by player."""
     use = [c for c in sorted(clips, key=lambda c: c.start) if c.enabled]
-    stem = safe_name((opts.prefix + " " if opts.prefix else "") + os.path.splitext(os.path.basename(src))[0])
+    stem = video_stem(src, opts)
     folder = os.path.join(opts.out_dir, stem)
     os.makedirs(folder, exist_ok=True)
     labels = [ball_label(i, opts) for i in range(1, len(use) + 1)]
     ext = out_ext(src, opts.accurate)
     files: list[str] = []
     steps = len(use) + (1 if opts.reel else 0) or 1
-    need_files = opts.clips or opts.reel
+    need_files = opts.clips or opts.reel or opts.by_player
+    made: list[tuple[str, Clip]] = []
     for i, (c, lab) in enumerate(zip(use, labels)):
         if cancel and cancel():
             raise Cancelled()
         if progress:
             progress(i / steps, f"{stem}: {lab} ({i + 1}/{len(use)})")
         if need_files:
-            out = os.path.join(folder, f"{stem}_{lab}{ext}")
+            out = os.path.join(folder, f"{stem}_{lab}{player_suffix(c)}{ext}")
             cut(src, c.start, c.end, out, info, opts.accurate)
             files.append(out)
+            made.append((out, c))
     if opts.reel and files:
         if progress:
             progress(len(use) / steps, f"{stem}: joining all balls into one reel")
         concat(files, os.path.join(folder, f"{stem}_ALL_BALLS{ext}"))
-        if not opts.clips:
-            for f in files:
-                os.remove(f)
     if opts.csv:
         with open(os.path.join(folder, f"{stem}_balls.csv"), "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["ball", "start", "end", "shot_moment", "start_seconds", "end_seconds",
+            w.writerow(["ball", "batter", "bowler", "start", "end", "shot_moment", "start_seconds", "end_seconds",
                         "length_seconds", "confidence", "added_by_hand", "source_video"])
             for c, lab in zip(use, labels):
-                w.writerow([lab, fmt_time(c.start), fmt_time(c.end), fmt_time(c.peak), f"{c.start:.2f}",
+                w.writerow([lab, c.batter, c.bowler, fmt_time(c.start), fmt_time(c.end), fmt_time(c.peak),
+                            f"{c.start:.2f}",
                             f"{c.end:.2f}", f"{c.length:.2f}", f"{c.score:.2f}", "yes" if c.manual else "no",
                             os.path.basename(src)])
     if opts.edl and use:
         write_edl(os.path.join(folder, f"{stem}_premiere.edl"), src, use, labels, info.fps, stem)
     if progress:
         progress(1.0, f"{stem}: done")
-    return folder
+    return folder, made
+
+
+def video_stem(src: str, opts: ExportOptions) -> str:
+    return safe_name((opts.prefix + " " if opts.prefix else "") + os.path.splitext(os.path.basename(src))[0])
+
+
+def player_suffix(c: Clip) -> str:
+    parts = []
+    if c.batter:
+        parts.append(c.batter)
+    if c.bowler:
+        parts.append(("bowled_" if not c.batter else "vs_") + c.bowler)
+    return ("_" + "_".join(safe_name(p).replace(" ", "-") for p in parts)) if parts else ""
+
+
+def remove_clip_files(made: list[tuple[str, Clip]]) -> None:
+    for path, _ in made:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _link_or_copy(src: str, dst: str) -> None:
+    """Hard link when possible (no extra disk space), otherwise copy."""
+    if os.path.exists(dst):
+        os.remove(dst)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def export_players(
+    made: list[tuple[str, Clip]],
+    out_dir: str,
+    reels: bool = True,
+    progress: Callable[[float, str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> tuple[str, list[str]]:
+    """Sort clip files into Players/Batter - <name> and Players/Bowler - <name>, each with that player's
+    clips and (if reels) one video of all their balls. Returns the Players folder and any warnings."""
+    groups: dict[str, list[str]] = {}
+    for path, c in made:
+        if c.batter:
+            groups.setdefault(f"Batter - {safe_name(c.batter)}", []).append(path)
+        if c.bowler:
+            groups.setdefault(f"Bowler - {safe_name(c.bowler)}", []).append(path)
+    root = os.path.join(out_dir, "Players")
+    warnings: list[str] = []
+    if not groups:
+        return root, ["No batter or bowler names were set, so no player folders were made."]
+    os.makedirs(root, exist_ok=True)
+    rows = []
+    for k, (name, files) in enumerate(sorted(groups.items())):
+        if cancel and cancel():
+            raise Cancelled()
+        if progress:
+            progress(k / len(groups), f"Player folders: {name} ({len(files)} balls)")
+        d = os.path.join(root, name)
+        os.makedirs(d, exist_ok=True)
+        for f in files:
+            _link_or_copy(f, os.path.join(d, os.path.basename(f)))
+        reel = ""
+        if reels and len(files) > 1:
+            ext = os.path.splitext(files[0])[1]
+            reel = os.path.join(d, f"{name} - all balls{ext}")
+            same_type = all(os.path.splitext(f)[1] == ext for f in files)
+            try:
+                if not same_type:
+                    raise RuntimeError("clips are of different file types")
+                concat(files, reel)
+            except Exception:
+                reel = ""
+                warnings.append(f"{name}: could not join the clips into one video (the videos were "
+                                "probably recorded with different settings; 'Exact frame' export fixes this). "
+                                "The separate clips are there.")
+        rows.append((name, len(files), os.path.basename(reel)))
+    with open(os.path.join(root, "players_summary.csv"), "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["player", "balls", "joined_video"])
+        w.writerows(rows)
+    if progress:
+        progress(1.0, "Player folders done")
+    return root, warnings
+
+
+def write_report(path: str, motion, clips: list[Clip], params, version: str) -> None:
+    """A zip with the motion grid (no images) and the reviewed ball list, for tuning the tracker."""
+    import numpy as np
+
+    buf = io.BytesIO()
+    np.savez_compressed(buf, cells=motion.cells, fps=motion.fps)
+    info = motion.info
+    meta = {
+        "app_version": version,
+        "video": {"name": os.path.basename(info.path), "duration": info.duration, "fps": info.fps,
+                  "width": info.width, "height": info.height},
+        "params": params.to_dict(),
+        "balls": [{"start": round(c.start, 2), "end": round(c.end, 2), "shot": round(c.peak, 2),
+                   "score": round(c.score, 3), "kept": c.enabled, "added_by_hand": c.manual,
+                   "batter": c.batter, "bowler": c.bowler}
+                  for c in sorted(clips, key=lambda c: c.peak)],
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("motion.npz", buf.getvalue())
+        z.writestr("review.json", json.dumps(meta, indent=1))

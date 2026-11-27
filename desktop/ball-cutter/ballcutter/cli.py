@@ -36,7 +36,7 @@ def main(argv=None) -> int:
         for i, c in enumerate(clips, 1):
             print(f"  {i:3d}  {fmt_time(c.start)} - {fmt_time(c.end)}  shot {fmt_time(c.peak)}  conf {c.score:.1f}")
         if not a.list_only:
-            folder = export_video(path, m.info, clips,
+            folder, _ = export_video(path, m.info, clips,
                                   ExportOptions(a.out, accurate=a.accurate, reel=not a.no_reel),
                                   progress=lambda f, s: print(f"\r  {s:<60}", end="", flush=True))
             print(f"\n  saved to {folder}")

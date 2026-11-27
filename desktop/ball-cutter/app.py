@@ -17,12 +17,15 @@ import numpy as np
 from ballcutter import __version__
 from ballcutter.detect import (PRESETS, Cancelled, Clip, Motion, Params, analyze, compute_signal,
                                detect_balls, fix_bounds, manual_clip)
-from ballcutter.export import ExportOptions, cut, export_video, fmt_time
+from ballcutter import session
+from ballcutter.export import (ExportOptions, cut, export_players, export_video, fmt_time, remove_clip_files,
+                               write_report)
 from ballcutter.ffmpeg_tools import extract_frame, open_with_system_player, probe
 
 APP_NAME = "Ball Cutter"
 VIDEO_TYPES = [("Video files", "*.mp4 *.mov *.m4v *.mkv *.avi *.mts *.m2ts *.mxf *.wmv *.MP4 *.MOV *.MTS"),
                ("All files", "*.*")]
+SETTINGS_VERSION = 2
 DETAIL_SPAN = 60.0  # seconds shown in the zoomed graph
 CUSTOM = "Custom"
 
@@ -58,13 +61,14 @@ class VideoItem:
         self.preset = list(PRESETS)[0]
         self.status = "waiting"
         self.edited = False
+        self.analysed = False  # set by the worker thread as soon as its analysis is finished
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} {__version__} – ball-by-ball clips for cricket training")
-        self.geometry("1360x860")
+        self.geometry("1480x940")
         self.minsize(1100, 700)
         try:
             self.iconbitmap(resource(os.path.join("packaging", "icon.ico")))
@@ -82,17 +86,25 @@ class App(tk.Tk):
         self.thumb_img = None
         self.tmp = tempfile.mkdtemp(prefix="ballcutter_")
         self.settings = self._load_settings()
+        self.batters: list[str] = list(self.settings.get("batters", []))
+        self.bowlers: list[str] = list(self.settings.get("bowlers", []))
+        self.bowling_order: list[str] = list(self.settings.get("bowling_order", []))
+        self.autosave_job = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(100, self._poll)
+        self._poll_job = self.after(100, self._poll)
 
     # ------------------------------------------------------------------ settings
     def _load_settings(self) -> dict:
         try:
             with open(settings_path(), encoding="utf-8") as f:
-                return json.load(f)
+                s = json.load(f)
         except Exception:
             return {}
+        if s.get("version", 1) < SETTINGS_VERSION:  # detection defaults changed: start from the new ones
+            s.pop("params", None)
+            s.pop("preset", None)
+        return s
 
     def _save_settings(self):
         s = {
@@ -103,6 +115,9 @@ class App(tk.Tk):
             "over_naming": self.over_naming.get(), "bpo": self.bpo.get(),
             "preset": self.preset_var.get(), "params": self._params_from_widgets().to_dict(),
             "last_dir": self.settings.get("last_dir", ""),
+            "version": SETTINGS_VERSION,
+            "batters": self.batters, "bowlers": self.bowlers, "bowling_order": self.bowling_order,
+            "do_players": self.do_players.get(),
         }
         try:
             with open(settings_path(), "w", encoding="utf-8") as f:
@@ -228,7 +243,7 @@ class App(tk.Tk):
 
         thumbf = ttk.Frame(lower)
         thumbf.grid(row=2, column=0, sticky="nw", pady=8)
-        self.thumb = ttk.Label(thumbf, text="(frame at the shot appears here)", width=40, anchor="center",
+        self.thumb = ttk.Label(thumbf, text="(frame at the shot appears here)", width=34, anchor="center",
                                relief="groove")
         self.thumb.pack(side="left")
         ctl = ttk.Frame(thumbf, padding=(10, 0))
@@ -251,9 +266,10 @@ class App(tk.Tk):
         right = ttk.LabelFrame(outer, text=" 3. Balls found ", padding=6)
         right.grid(row=1, column=2, sticky="nsew", pady=8, padx=(8, 0))
         right.rowconfigure(0, weight=1)
-        cols = ("n", "keep", "start", "end", "len", "conf")
-        self.tree = ttk.Treeview(right, columns=cols, show="headings", selectmode="browse", height=20)
-        for c, t, w in zip(cols, ("Ball", "Keep", "Start", "End", "Sec", "Strength"), (44, 44, 70, 70, 44, 66)):
+        cols = ("n", "keep", "start", "len", "batter", "bowler", "conf")
+        self.tree = ttk.Treeview(right, columns=cols, show="headings", selectmode="extended", height=16)
+        for c, t, w in zip(cols, ("Ball", "Keep", "Start", "Sec", "Batter", "Bowler", "Str."),
+                           (36, 42, 64, 34, 80, 80, 38)):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor="center", stretch=False)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -270,8 +286,33 @@ class App(tk.Tk):
         self.tree.bind("<Double-Button-1>", lambda e: self.preview())
         self.count_label = ttk.Label(right, text="", foreground="#333")
         self.count_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Label(right, text="Yellow = weak detection, worth a look.\nBlue = added by you.",
+        ttk.Label(right, text="Yellow = weak detection, worth a look.  Blue = added by you.\n"
+                              "Shift/Ctrl-click to select several balls.",
                   foreground="#666").grid(row=2, column=0, columnspan=2, sticky="w")
+
+        pl = ttk.LabelFrame(right, text=" Players ", padding=6)
+        pl.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        pl.columnconfigure(1, weight=1)
+        self.batter_var = tk.StringVar()
+        self.bowler_var = tk.StringVar()
+        ttk.Label(pl, text="Batter:").grid(row=0, column=0, sticky="w")
+        self.batter_cb = ttk.Combobox(pl, textvariable=self.batter_var, values=self.batters, width=14)
+        self.batter_cb.grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(pl, text="From this ball on", command=lambda: self.set_player("batter", True)).grid(row=0, column=2)
+        ttk.Button(pl, text="Selected only", command=lambda: self.set_player("batter", False)).grid(
+            row=0, column=3, padx=(4, 0))
+        ttk.Label(pl, text="Bowler:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.bowler_cb = ttk.Combobox(pl, textvariable=self.bowler_var, values=self.bowlers, width=14)
+        self.bowler_cb.grid(row=1, column=1, sticky="ew", padx=4, pady=(4, 0))
+        ttk.Button(pl, text="Bowling order…", command=self.bowling_rotation).grid(row=1, column=2, pady=(4, 0))
+        ttk.Button(pl, text="Selected only", command=lambda: self.set_player("bowler", False)).grid(
+            row=1, column=3, padx=(4, 0), pady=(4, 0))
+        pb = ttk.Frame(pl)
+        pb.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        ttk.Button(pb, text="Squad list…", command=self.edit_squad).pack(side="left")
+        ttk.Button(pb, text="Clear names (selected)", command=self.clear_players).pack(side="left", padx=4)
+        ttk.Button(right, text="Save report for developer…", command=self.save_report).grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # ---- bottom: export
         bot = ttk.LabelFrame(outer, text=" 4. Export ", padding=6)
@@ -303,6 +344,8 @@ class App(tk.Tk):
         ttk.Checkbutton(opt2, text="All balls joined in one video", variable=self.do_reel).pack(side="left", padx=8)
         ttk.Checkbutton(opt2, text="Ball list (CSV/Excel)", variable=self.do_csv).pack(side="left", padx=8)
         ttk.Checkbutton(opt2, text="Premiere Pro EDL", variable=self.do_edl).pack(side="left", padx=8)
+        self.do_players = tk.BooleanVar(value=self.settings.get("do_players", True))
+        ttk.Checkbutton(opt2, text="Folder per player", variable=self.do_players).pack(side="left", padx=8)
         ttk.Checkbutton(opt2, text="Name by over, balls/over:",
                         variable=self.over_naming).pack(side="left", padx=(16, 2))
         ttk.Spinbox(opt2, from_=1, to=12, textvariable=self.bpo, width=3).pack(side="left")
@@ -399,8 +442,13 @@ class App(tk.Tk):
         if v.motion:
             i = v.motion.info
             kept = sum(c.enabled for c in v.clips)
-            self.info_label.config(text=f"{v.name}   ·   {fmt_time(v.motion.duration)} long   ·   "
-                                        f"{i.width}x{i.height} @ {i.fps:.2f} fps   ·   {kept} balls")
+            if v.signal is not None and v.signal.mode == "pattern":
+                how = "tracker: learned delivery pattern" + (" (+ mirrored, left & right-handers)"
+                                                              if v.signal.templates > 1 else "")
+            else:
+                how = "tracker: movement bursts (too few clear balls to learn a pattern)"
+            self.info_label.config(text=f"{v.name}   ·   {fmt_time(v.motion.duration)}   ·   "
+                                        f"{i.width}x{i.height} @ {i.fps:.0f} fps   ·   {kept} balls   ·   {how}")
         else:
             self.info_label.config(text=f"{v.name}   ·   {v.status}")
 
@@ -472,6 +520,16 @@ class App(tk.Tk):
                     c.enabled = False
             new = fix_bounds(new + [m for m in manual if all(abs(m.peak - c.peak) > 1.0 for c in new)],
                              v.motion.duration)
+        old = [c for c in v.clips if c.batter or c.bowler]
+        if old:  # carry player names over to the re-detected balls
+            for c in new:
+                near = min(old, key=lambda o: abs(o.peak - c.peak))
+                if abs(near.peak - c.peak) < 1.0:
+                    c.batter, c.bowler = near.batter, near.bowler
+                elif not c.batter:
+                    before = [o for o in old if o.peak < c.peak and o.batter]
+                    if before:  # batters bat in blocks: a new ball belongs to the batter in at the time
+                        c.batter = before[-1].batter
         v.clips = new
 
     def apply_all(self):
@@ -536,7 +594,7 @@ class App(tk.Tk):
         self.status.config(text="Cancelling…")
 
     def analyze_all(self):
-        todo = [v for v in self.videos if v.motion is None]
+        todo = [v for v in self.videos if not v.analysed]
         if not todo:
             return
         if self.worker and self.worker.is_alive():
@@ -545,7 +603,7 @@ class App(tk.Tk):
 
     def _analyze_job(self):
         while True:
-            todo = [v for v in self.videos if v.motion is None and v.status != "error"]
+            todo = [v for v in self.videos if not v.analysed and v.status != "error"]
             if not todo:
                 return
             v = todo[0]
@@ -563,6 +621,9 @@ class App(tk.Tk):
                 self.q.put(("vstatus", v, "error"))
                 self.q.put(("error", f"{v.name}: {e}"))
                 continue
+            self.q.put(("progress", 1.0, f"{v.name}: learning what a delivery looks like…"))
+            compute_signal(m, v.params)  # learns the delivery pattern here, off the UI thread (cached)
+            v.analysed = True
             self.q.put(("analysed", v, m))
 
     def _poll(self):
@@ -584,11 +645,20 @@ class App(tk.Tk):
                     v.motion = m
                     if v is self.cur:
                         v.params = self._params_from_widgets()
-                    self._detect(v, keep_edits=False)
-                    self._set_vstatus(v, f"{len(v.clips)} balls")
+                    saved = session.load(v.path)
+                    if saved:
+                        v.clips, v.params, preset = saved
+                        v.preset = preset or v.preset
+                        v.signal = compute_signal(v.motion, v.params)
+                        v.edited = True
+                        msg_text = f"{v.name}: restored your earlier ball list and player names."
+                    else:
+                        self._detect(v, keep_edits=False)
+                        msg_text = f"{v.name}: found {len(v.clips)} balls."
+                    self._set_vstatus(v, f"{sum(c.enabled for c in v.clips)} balls")
                     if v is self.cur:
                         self._show_video(v)
-                    self.status.config(text=f"{v.name}: found {len(v.clips)} balls.")
+                    self.status.config(text=msg_text)
                 elif kind == "thumb":
                     self._show_thumb(msg[1], msg[2])
                 elif kind == "open":
@@ -600,17 +670,18 @@ class App(tk.Tk):
                     messagebox.showerror(APP_NAME, msg[1])
                 elif kind == "exported":
                     self.status.config(text=f"Export finished: {msg[1]}")
-                    if messagebox.askyesno(APP_NAME, f"Export finished.\n\n{msg[1]}\n\nOpen the folder?"):
+                    extra = ("\n\nNote:\n" + "\n".join(msg[2])) if len(msg) > 2 and msg[2] else ""
+                    if messagebox.askyesno(APP_NAME, f"Export finished.\n\n{msg[1]}{extra}\n\nOpen the folder?"):
                         self.open_out()
                 elif kind == "idle":
                     self.cancel_btn.config(state="disabled")
                     self.prog["value"] = 0
         except queue.Empty:
             pass
-        self.after(100, self._poll)
+        self._poll_job = self.after(100, self._poll)
 
     # ------------------------------------------------------------------ clip list
-    def _fill_tree(self, select_uid=None):
+    def _fill_tree(self, select_uid=None, select_uids=None):
         self.tree.delete(*self.tree.get_children())
         v = self.cur
         if not v:
@@ -622,11 +693,16 @@ class App(tk.Tk):
                 n += 1
             tags = ("off",) if not c.enabled else ("manual",) if c.manual else ("weak",) if c.score < 1.4 else ()
             self.tree.insert("", "end", iid=str(c.uid), tags=tags, values=(
-                n if c.enabled else "–", "✓" if c.enabled else "✗", fmt_time(c.start), fmt_time(c.end),
-                f"{c.length:.1f}", "manual" if c.manual else f"{c.score:.1f}"))
+                n if c.enabled else "–", "✓" if c.enabled else "✗", fmt_time(c.start),
+                f"{c.length:.1f}", c.batter, c.bowler, "hand" if c.manual else f"{c.score:.1f}"))
         kept = sum(c.enabled for c in v.clips)
         self.count_label.config(text=f"{kept} balls kept, {len(v.clips) - kept} skipped")
-        if select_uid is not None and self.tree.exists(str(select_uid)):
+        if select_uids:
+            keep = [str(u) for u in select_uids if self.tree.exists(str(u))]
+            if keep:
+                self.tree.selection_set(keep)
+                self.tree.see(keep[0])
+        elif select_uid is not None and self.tree.exists(str(select_uid)):
             self.tree.selection_set(str(select_uid))
             self.tree.see(str(select_uid))
 
@@ -651,7 +727,7 @@ class App(tk.Tk):
         out = os.path.join(self.tmp, f"thumb_{c.uid}_{int(c.peak * 10)}.png")
 
         def job():
-            if os.path.exists(out) or extract_frame(v.path, c.peak, out, 360):
+            if os.path.exists(out) or extract_frame(v.path, c.peak, out, 300):
                 self.q.put(("thumb", c.uid, out))
         threading.Thread(target=job, daemon=True).start()
 
@@ -665,20 +741,121 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
-    def _edited(self, c: Clip | None = None):
+    def _edited(self, c: Clip | None = None, select_uids=None):
         v = self.cur
         v.edited = True
         v.clips = fix_bounds(v.clips, v.motion.duration)
-        self._fill_tree(select_uid=c.uid if c else None)
+        self._fill_tree(select_uid=c.uid if c else None, select_uids=select_uids)
         self._set_vstatus(v, f"{sum(x.enabled for x in v.clips)} balls")
         self._update_info()
         self.redraw()
+        self._autosave(v)
+
+    # ------------------------------------------------------------------ players
+    def _sel_clips(self) -> list[Clip]:
+        if not self.cur:
+            return []
+        sel = set(self.tree.selection())
+        return [c for c in self.cur.clips if str(c.uid) in sel]
+
+    def _remember_name(self, role: str, name: str):
+        lst = self.batters if role == "batter" else self.bowlers
+        if name and name not in lst:
+            lst.append(name)
+            (self.batter_cb if role == "batter" else self.bowler_cb).config(values=lst)
+
+    def set_player(self, role: str, onwards: bool):
+        """Batters bat in blocks: 'from this ball on' names every later ball until the next change."""
+        v = self.cur
+        sel = self._sel_clips()
+        name = (self.batter_var if role == "batter" else self.bowler_var).get().strip()
+        if not v or not sel:
+            messagebox.showinfo(APP_NAME, "Select a ball in the list first.")
+            return
+        if not name:
+            messagebox.showinfo(APP_NAME, f"Type or choose the {role}'s name first.")
+            return
+        self._remember_name(role, name)
+        if onwards:
+            first = min(sel, key=lambda c: c.peak)
+            old = getattr(first, role)
+            targets = []
+            for c in v.clips:
+                if c.peak < first.peak:
+                    continue
+                cur = getattr(c, role)
+                if c is not first and cur and cur != old:  # stop at the next player already named
+                    break
+                targets.append(c)
+        else:
+            targets = sel
+        for c in targets:
+            setattr(c, role, name)
+        self.status.config(text=f"{name}: {role} for {len(targets)} ball(s).")
+        self._edited(select_uids=[c.uid for c in sel])
+
+    def clear_players(self):
+        sel = self._sel_clips()
+        for c in sel:
+            c.batter = c.bowler = ""
+        if sel:
+            self._edited(select_uids=[c.uid for c in sel])
+
+    def bowling_rotation(self):
+        if not self.cur or not self._sel_clips():
+            messagebox.showinfo(APP_NAME, "Select the first ball of the rotation in the list first.")
+            return
+        RotationDialog(self)
+
+    def apply_rotation(self, order: list[str], fill_to_end: bool, end_uid=None):
+        v = self.cur
+        sel = self._sel_clips()
+        if not v or not sel or not order:
+            return
+        self.bowling_order = order
+        for n in order:
+            self._remember_name("bowler", n)
+        first = min(sel, key=lambda c: c.peak)
+        last = max(sel, key=lambda c: c.peak) if (len(sel) > 1 and not fill_to_end) else None
+        k = 0
+        for c in v.clips:
+            if c.peak < first.peak or not c.enabled:
+                continue
+            if last is not None and c.peak > last.peak:
+                break
+            c.bowler = order[k % len(order)]
+            k += 1
+        self.status.config(text=f"Bowling order applied to {k} balls.")
+        self._edited(select_uids=[c.uid for c in sel])
+
+    def edit_squad(self):
+        SquadDialog(self)
+
+    def set_squad(self, batters: list[str], bowlers: list[str]):
+        self.batters, self.bowlers = batters, bowlers
+        self.batter_cb.config(values=batters)
+        self.bowler_cb.config(values=bowlers)
+        self._save_settings()
+
+    def _autosave(self, v: VideoItem):
+        if self.autosave_job:
+            self.after_cancel(self.autosave_job)
+
+        def do():
+            self.autosave_job = None
+            try:
+                session.save(v.path, v.clips, v.params, v.preset)
+            except Exception:
+                pass
+        self.autosave_job = self.after(800, do)
 
     def toggle(self):
-        c = self._sel_clip()
-        if c:
-            c.enabled = not c.enabled
-            self._edited(c)
+        sel = self._sel_clips()
+        if sel:
+            new = not sel[0].enabled
+            for c in sel:
+                c.enabled = new
+            self._edited(select_uids=[c.uid for c in sel])
 
     def delete_clip(self):
         c = self._sel_clip()
@@ -805,7 +982,8 @@ class App(tk.Tk):
             cv.create_rectangle((c.start - t0) * sx, 0, (c.end - t0) * sx, gh, fill=col, outline="#7fb98a")
             cv.create_line((c.peak - t0) * sx, 0, (c.peak - t0) * sx, gh, fill="#5c9a6a", dash=(2, 2))
             cv.create_text((c.start - t0) * sx + 4, 4, anchor="nw", font=("Segoe UI", 9, "bold"),
-                           text=(f"Ball {num}" if c.enabled else "skipped") + (" (added)" if c.manual else ""))
+                           text=(f"Ball {num}" if c.enabled else "skipped") + (" (added)" if c.manual else "")
+                           + (f" · {c.batter}" if c.batter else ""))
         i0, i1 = int(t0 * fps), min(len(ex), int(t1 * fps) + 1)
         seg = ex[i0:i1]
         pts = []
@@ -875,6 +1053,32 @@ class App(tk.Tk):
             return
         self._pan(secs)
 
+    def save_report(self):
+        """Motion data + the analyst's corrections (no video), to tune the tracker on real sessions."""
+        v = self.cur
+        if not v or not v.motion:
+            messagebox.showinfo(APP_NAME, "Select an analysed video first.")
+            return
+        if not messagebox.askokcancel(APP_NAME, (
+                "This saves a small file (no video, no pictures) with the movement data of this video and "
+                "your corrections to the ball list.\n\nBefore saving, please fix the list as well as you "
+                "can: add the balls that were missed (double-click the zoom graph) and delete false ones. "
+                "Your corrections show exactly where the tracker went wrong.")):
+            return
+        stem = os.path.splitext(v.name)[0]
+        path = filedialog.asksaveasfilename(title="Save report", defaultextension=".zip",
+                                            initialfile=f"{stem}_ballcutter_report.zip",
+                                            filetypes=[("Zip file", "*.zip")])
+        if not path:
+            return
+        try:
+            write_report(path, v.motion, v.clips, v.params, __version__)
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Could not save the report:\n{e}")
+            return
+        messagebox.showinfo(APP_NAME, f"Report saved:\n{path}\n\nSend this file to whoever maintains "
+                                      "Ball Cutter (for example, upload it to the GitHub repository).")
+
     # ------------------------------------------------------------------ export
     def choose_out(self):
         d = filedialog.askdirectory(title="Where should the clips be saved?", initialdir=self.out_dir.get() or None)
@@ -899,7 +1103,8 @@ class App(tk.Tk):
         if not any(c.enabled for v in vids for c in v.clips):
             messagebox.showinfo(APP_NAME, "No balls are marked to keep.")
             return
-        if not (self.do_clips.get() or self.do_reel.get() or self.do_csv.get() or self.do_edl.get()):
+        if not (self.do_clips.get() or self.do_reel.get() or self.do_csv.get() or self.do_edl.get()
+                or self.do_players.get()):
             messagebox.showinfo(APP_NAME, "Tick at least one thing to export.")
             return
         if self.cur:
@@ -910,7 +1115,8 @@ class App(tk.Tk):
             bpo = 6
         opts = ExportOptions(out_dir=self.out_dir.get(), accurate=self.accurate.get(), clips=self.do_clips.get(),
                              reel=self.do_reel.get(), csv=self.do_csv.get(), edl=self.do_edl.get(),
-                             over_naming=self.over_naming.get(), balls_per_over=bpo)
+                             over_naming=self.over_naming.get(), balls_per_over=bpo,
+                             by_player=self.do_players.get())
         try:
             os.makedirs(opts.out_dir, exist_ok=True)
         except OSError as e:
@@ -921,17 +1127,27 @@ class App(tk.Tk):
             if not messagebox.askyesno(APP_NAME, f"Only {free / 1024 ** 3:.1f} GB free in the output folder. Continue?"):
                 return
         self._save_settings()
-        jobs = [(v.path, v.motion.info, [Clip(c.start, c.end, c.peak, c.score, c.enabled, c.manual)
+        jobs = [(v.path, v.motion.info, [Clip(c.start, c.end, c.peak, c.score, c.enabled, c.manual,
+                                              batter=c.batter, bowler=c.bowler)
                                          for c in v.clips], v.name) for v in vids]
         self._start(self._export_job, jobs, opts)
 
     def _export_job(self, jobs, opts):
-        n = len(jobs)
+        n = len(jobs) + (1 if opts.by_player else 0)
+        made_all = []
         for k, (path, info, clips, name) in enumerate(jobs):
             def prog(f, s, k=k):
                 self.q.put(("progress", (k + f) / n, s))
-            export_video(path, info, clips, opts, prog, self.cancel_flag.is_set)
-        self.q.put(("exported", opts.out_dir))
+            _, made = export_video(path, info, clips, opts, prog, self.cancel_flag.is_set)
+            made_all += made
+        warnings = []
+        if opts.by_player:
+            def prog(f, s):
+                self.q.put(("progress", (len(jobs) + f) / n, s))
+            _, warnings = export_players(made_all, opts.out_dir, True, prog, self.cancel_flag.is_set)
+        if not opts.clips:  # per-ball files were only needed for the reel / player folders
+            remove_clip_files(made_all)
+        self.q.put(("exported", opts.out_dir, warnings))
 
     def _on_close(self):
         if self.worker and self.worker.is_alive():
@@ -939,7 +1155,97 @@ class App(tk.Tk):
                 return
             self.cancel_flag.set()
         self._save_settings()
+        for v in self.videos:
+            if v.motion and v.edited:
+                try:
+                    session.save(v.path, v.clips, v.params, v.preset)
+                except Exception:
+                    pass
         shutil.rmtree(self.tmp, ignore_errors=True)
+        for job in (self._poll_job, self.redetect_job, self.autosave_job):
+            if job:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
+        self.destroy()
+
+
+def _lines(text: str) -> list[str]:
+    out = []
+    for line in text.splitlines():
+        name = line.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+class SquadDialog(tk.Toplevel):
+    """Names of the batters and bowlers, one per line. Remembered for next time."""
+
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.title("Squad list")
+        self.transient(app)
+        f = ttk.Frame(self, padding=10)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Type one name per line.").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(f, text="Batters").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(f, text="Bowlers").grid(row=1, column=1, sticky="w", pady=(6, 0), padx=(10, 0))
+        self.bat = tk.Text(f, width=24, height=14)
+        self.bowl = tk.Text(f, width=24, height=14)
+        self.bat.grid(row=2, column=0)
+        self.bowl.grid(row=2, column=1, padx=(10, 0))
+        self.bat.insert("1.0", "\n".join(app.batters))
+        self.bowl.insert("1.0", "\n".join(app.bowlers))
+        b = ttk.Frame(f)
+        b.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(b, text="Save", command=self.ok).pack(side="right", padx=6)
+        self.grab_set()
+
+    def ok(self):
+        self.app.set_squad(_lines(self.bat.get("1.0", "end")), _lines(self.bowl.get("1.0", "end")))
+        self.destroy()
+
+
+class RotationDialog(tk.Toplevel):
+    """Bowlers in the nets usually bowl in turn: A, B, C, D, A, B, ..."""
+
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.title("Bowling order")
+        self.transient(app)
+        f = ttk.Frame(self, padding=10)
+        f.pack(fill="both", expand=True)
+        n_sel = len(app._sel_clips())
+        ttk.Label(f, wraplength=320, justify="left", text=(
+            "Type the bowlers in the order they bowl, one per line. The names are filled in turn "
+            "(1st, 2nd, 3rd, …, then the 1st again), starting at the selected ball and skipping balls "
+            "marked ✗. Fix any single ball afterwards with 'Selected only'.")).grid(row=0, column=0, sticky="w")
+        self.txt = tk.Text(f, width=28, height=8)
+        self.txt.grid(row=1, column=0, sticky="w", pady=6)
+        self.txt.insert("1.0", "\n".join(app.bowling_order or app.bowlers))
+        self.to_end = tk.BooleanVar(value=n_sel <= 1)
+        ttk.Radiobutton(f, text="From the selected ball to the end of the video", variable=self.to_end,
+                        value=True).grid(row=2, column=0, sticky="w")
+        ttk.Radiobutton(f, text=f"Only the {n_sel} selected balls" if n_sel > 1 else "Only the selected balls",
+                        variable=self.to_end, value=False,
+                        state="normal" if n_sel > 1 else "disabled").grid(row=3, column=0, sticky="w")
+        b = ttk.Frame(f)
+        b.grid(row=4, column=0, sticky="e", pady=(8, 0))
+        ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(b, text="Apply", command=self.ok).pack(side="right", padx=6)
+        self.grab_set()
+
+    def ok(self):
+        order = _lines(self.txt.get("1.0", "end"))
+        if not order:
+            messagebox.showinfo(APP_NAME, "Type at least one bowler.", parent=self)
+            return
+        self.app.apply_rotation(order, self.to_end.get())
         self.destroy()
 
 
