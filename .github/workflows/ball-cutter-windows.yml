@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -45,6 +45,24 @@ jobs:
           $ver = (Select-String -Path ballcutter/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
           & $iscc "/DAppVersion=$ver" packaging/installer.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          "BC_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Copy-Item "dist/BallCutter-Setup-$ver.exe" "dist/BallCutter-Setup.exe"
+          Compress-Archive -Path dist/BallCutter/* -DestinationPath dist/BallCutter-Portable.zip -Force
+      - name: Publish download page (GitHub Release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ball-cutter-v${{ env.BC_VERSION }}
+          name: Ball Cutter ${{ env.BC_VERSION }} for Windows
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            **To install:** click **BallCutter-Setup.exe** below, then open the downloaded file.
+            If Windows says "Windows protected your PC", click **More info** then **Run anyway**.
+
+            No install wanted? Download **BallCutter-Portable.zip**, unzip it, run BallCutter.exe.
+          files: |
+            desktop/ball-cutter/dist/BallCutter-Setup.exe
+            desktop/ball-cutter/dist/BallCutter-Portable.zip
       - uses: actions/upload-artifact@v4
         with:
           name: BallCutter-Windows-Installer
