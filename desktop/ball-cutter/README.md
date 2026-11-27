@@ -47,12 +47,26 @@ To build on your own PC instead: install Python 3.12 from python.org (tick *Add 
 
 ### Clips for each player (batters and bowlers)
 
-In the nets, 2–4 batters take turns and 4–6 bowlers bowl in rotation. Ball Cutter can sort the clips so each player gets their own folder:
+In the nets, 2–4 batters take turns and 4–6 bowlers bowl in rotation. Ball Cutter can recognise the players itself and sort the clips so each player gets her own folder.
 
-1. **Squad list…** (in the *Players* box): type your batters and bowlers, one per line. This is remembered.
-2. **Batters**: click the first ball a batter faced, choose her name, and click **From this ball on**. Every later ball gets that name, until the next ball that already has a different batter. Do this once each time the batter changes. To fix a single ball, select it and click **Selected only**.
-3. **Bowlers**: click the first ball, then **Bowling order…**, type the bowlers in the order they bowl, and click **Apply**. The names are filled in turn (1st, 2nd, 3rd, 4th, then the 1st again), skipping balls marked ✗. Fix any single ball with **Selected only**. If the order changes partway through, select the ball where it changes and apply the new order from there.
-4. Keep **Folder per player** ticked and export. You get:
+**Automatically (recommended)**
+
+1. Select the video and click **★ Recognise players automatically…** in the *Players* box.
+2. Choose **Batters** and click **Find players**. The app looks at each ball's batter in her stance just before the delivery: helmet, shirt, pads, gloves, build, and whether she is left- or right-handed. It groups the balls that show the same person. Because batters bat in blocks of balls, one odd ball (a shadow, someone walking past) doesn't throw it off.
+3. You see a few pictures of each group and which balls it has. Type or choose each player's name once, then click **Apply names**. If one player was split into two groups, give both the same name. If two players were put together, set **How many players** and try again.
+4. For bowlers, do the same with **Bowlers**. This needs the camera behind the bowler, where the bowler running in is clearly visible. From the camera above the batter the bowler is hardly in the picture, so use **Bowling order…** (below) instead.
+
+On test sessions, batters were grouped 100% correctly from the camera above the batter, even three batters in the same team kit who differed only in helmet, gloves, height and stance. From behind the bowler, batters were 81–93% correct and bowlers about 88%. Real footage will differ, so glance through the list after applying names and fix any wrong ball with **Selected only**.
+
+**Export only some players**: click **Only these players…** in the *Export* box and tick, for example, just Asha. Only balls where she batted or bowled are exported. Click **All balls** to go back.
+
+**By hand**
+
+1. **Squad list…**: type your batters and bowlers, one per line. This is remembered.
+2. **Batters**: click the first ball a batter faced, choose her name, and click **From this ball on**. Every later ball gets that name, until the next ball that already has a different batter. To fix a single ball, select it and click **Selected only**.
+3. **Bowlers**: click the first ball, then **Bowling order…**, type the bowlers in the order they bowl, and click **Apply**. The names are filled in turn (1st, 2nd, 3rd, 4th, then the 1st again), skipping balls marked ✗. If the order changes partway through, select the ball where it changes and apply the new order from there.
+
+**Exporting**: keep **Folder per player** ticked and export. You get:
 
 ```
 Ball Cutter/
@@ -68,8 +82,6 @@ Ball Cutter/
 Each file name also says who batted and who bowled, for example `Session1_Ball_014_Asha_vs_Indu.mp4`, and the CSV has *batter* and *bowler* columns. Send each player her folder, or just her "all balls" video (WhatsApp, Google Drive, a pen drive). When you export several videos together, each player's folder collects her balls from all of them. Player folders use hard links where Windows allows it, so they take no extra disk space.
 
 Your ball list and names are saved automatically for each video. Opening the same video again brings them back.
-
-The app does not yet recognise players by itself. Similar kit makes that unreliable, so for now the names come from the quick steps above.
 
 ### Opening the EDL in Premiere Pro
 
@@ -109,6 +121,8 @@ desktop/ball-cutter/
   app.py                  Tkinter desktop app
   ballcutter/detect.py    motion analysis and ball detection
   ballcutter/pattern.py   learned delivery-pattern tracker
+  ballcutter/players.py   automatic player recognition
+  ballcutter/session.py   remembers each video's reviewed ball list
   ballcutter/export.py    cutting, joining, CSV and EDL
   ballcutter/cli.py       command line: python -m ballcutter.cli VIDEO --out FOLDER [--view bowler]
   tests/                  python -m unittest (run inside tests/)

@@ -114,5 +114,31 @@ class HardSessionTest(unittest.TestCase):
         self.run_case("bowler", 23)
 
 
+class PlayerRecognitionTest(unittest.TestCase):
+    """Three batters in the same team kit (only helmet, gloves, height and stance differ) taking turns."""
+
+    def test_same_kit_batters(self):
+        from collections import Counter
+
+        import make_players_video
+        from ballcutter.players import find_players
+        d = tempfile.mkdtemp()
+        video = os.path.join(d, "nets.mp4")
+        times, bats, _ = make_players_video.make(video, duration=240, kit="same", n_batters=3, seed=3)
+        m = analyze(video, use_cache=False)
+        clips = detect_balls(m, list(PRESETS.values())[0])
+        g = find_players(video, m, clips, "batter")
+        rows = []
+        for c, lab in zip(clips, g.labels):
+            i = min(range(len(times)), key=lambda i: abs(times[i] - (c.start + c.end) / 2))
+            if c.start <= times[i] <= c.end:
+                rows.append((lab, bats[i]))
+        best = {lab: Counter(t for l2, t in rows if l2 == lab).most_common(1)[0][0] for lab in set(l for l, _ in rows)}
+        correct = sum(best[l] == t for l, t in rows)
+        print(f"\n  same-kit batters: {correct}/{len(rows)} balls grouped correctly, {len(best)} groups")
+        self.assertGreaterEqual(correct, 0.9 * len(rows))
+        self.assertGreaterEqual(len(best), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

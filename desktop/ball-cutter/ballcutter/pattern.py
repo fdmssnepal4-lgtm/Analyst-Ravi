@@ -215,7 +215,7 @@ def learn(F: np.ndarray, fps: float, gw: int) -> PatternResult | None:
     if not options:
         return None
     top_burst = max(o[1] for o in options)
-    T, s, q, level = max((o for o in options if o[1] >= 0.35 * top_burst), key=lambda o: o[0])[2]
+    T, s, q, level = max((o for o in options if o[1] >= 0.5 * top_burst), key=lambda o: o[0])[2]
 
     n_t = 1
     s = s / level  # scaled so that a typical delivery scores 1.0

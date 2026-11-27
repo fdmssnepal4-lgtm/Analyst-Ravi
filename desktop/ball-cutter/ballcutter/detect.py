@@ -82,7 +82,7 @@ PRESETS: dict[str, Params] = {
         sensitivity=6, min_gap=4, pre_roll=3.5, post_roll=3.0, auto_extend=False
     ),
     "Behind the bowler (end-on)": Params(
-        sensitivity=6, min_gap=4, pre_roll=6.0, post_roll=3.5, auto_extend=True
+        sensitivity=6, min_gap=4, pre_roll=6.0, post_roll=5.0, auto_extend=True
     ),
 }
 
@@ -348,12 +348,15 @@ def detect_balls(motion: Motion, params: Params, signal: Signal | None = None) -
                 peaks.append(i)
                 extra_scores[i] = min(0.99, float(ex[i] / sig.threshold))
         peaks.sort()
+    act = _motion_signal(motion, params)
     clips: list[Clip] = []
     for i in peaks:
         t = i / fps
         start, end = t - params.pre_roll, t + params.post_roll
         if params.auto_extend:
-            lo, hi = _burst_edges(ex, i, 0.35 * sig.threshold, int(1.0 * fps), int(params.max_clip * fps))
+            # follow the actual movement (run-up, delivery, shot, follow-through) until it calms down:
+            # from behind the bowler, the marked moment can be the run-up rather than the shot
+            lo, hi = _burst_edges(act.excess, i, 0.35 * act.threshold, int(1.2 * fps), int(params.max_clip * fps))
             start = min(start, lo / fps - 0.5)
             end = max(end, hi / fps + 0.5)
             ext_f = (t - start) - params.pre_roll
@@ -364,7 +367,25 @@ def detect_balls(motion: Motion, params: Params, signal: Signal | None = None) -
                 start = t - params.pre_roll - ext_f * scale
                 end = t + params.post_roll + ext_b * scale
         clips.append(Clip(start, end, t, extra_scores.get(i, float(ex[i] / sig.threshold))))
+    _split_at_quiet(clips, act, fps)
     return fix_bounds(clips, motion.duration)
+
+
+def _split_at_quiet(clips: list[Clip], act: Signal, fps: float) -> None:
+    """Where two clips overlap, cut at the quietest moment between the two balls (the pause between
+    deliveries) rather than at a fixed point."""
+    clips.sort(key=lambda c: c.peak)
+    calm = _smooth(act.excess, max(1, int(0.5 * fps)))
+    for a, b in zip(clips, clips[1:]):
+        if a.end <= b.start:
+            continue
+        lo = int((a.peak + 1.0) * fps)
+        hi = int((b.peak - 1.0) * fps)
+        if hi - lo < 2:
+            continue
+        cut = (lo + int(np.argmin(calm[lo:hi]))) / fps
+        a.end = min(a.end, cut)
+        b.start = max(b.start, cut)
 
 
 def _rhythm_rescue(ex: np.ndarray, peaks: list[int], thr: float, fps: float, min_gap: float) -> list[int]:

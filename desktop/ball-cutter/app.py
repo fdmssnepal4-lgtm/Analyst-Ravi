@@ -17,6 +17,7 @@ import numpy as np
 from ballcutter import __version__
 from ballcutter.detect import (PRESETS, Cancelled, Clip, Motion, Params, analyze, compute_signal,
                                detect_balls, fix_bounds, manual_clip)
+from ballcutter import players as auto_players
 from ballcutter import session
 from ballcutter.export import (ExportOptions, cut, export_players, export_video, fmt_time, remove_clip_files,
                                write_report)
@@ -25,7 +26,7 @@ from ballcutter.ffmpeg_tools import extract_frame, open_with_system_player, prob
 APP_NAME = "Ball Cutter"
 VIDEO_TYPES = [("Video files", "*.mp4 *.mov *.m4v *.mkv *.avi *.mts *.m2ts *.mxf *.wmv *.MP4 *.MOV *.MTS"),
                ("All files", "*.*")]
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 DETAIL_SPAN = 60.0  # seconds shown in the zoomed graph
 CUSTOM = "Custom"
 
@@ -311,6 +312,8 @@ class App(tk.Tk):
         pb.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         ttk.Button(pb, text="Squad list…", command=self.edit_squad).pack(side="left")
         ttk.Button(pb, text="Clear names (selected)", command=self.clear_players).pack(side="left", padx=4)
+        ttk.Button(pl, text="★ Recognise players automatically…", style="Big.TButton",
+                   command=self.recognise_players).grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         ttk.Button(right, text="Save report for developer…", command=self.save_report).grid(
             row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
@@ -350,8 +353,14 @@ class App(tk.Tk):
                         variable=self.over_naming).pack(side="left", padx=(16, 2))
         ttk.Spinbox(opt2, from_=1, to=12, textvariable=self.bpo, width=3).pack(side="left")
 
+        flt = ttk.Frame(bot)
+        flt.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self.export_only: set[str] = set()
+        ttk.Button(flt, text="Only these players…", command=self.choose_export_players).pack(side="left")
+        self.export_only_label = ttk.Label(flt, text="Exporting: all balls", foreground="#333")
+        self.export_only_label.pack(side="left", padx=8)
         act = ttk.Frame(bot)
-        act.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        act.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         act.columnconfigure(2, weight=1)
         ttk.Button(act, text="Export this video", style="Big.TButton", command=lambda: self.export(False)).grid(
             row=0, column=0)
@@ -362,7 +371,7 @@ class App(tk.Tk):
         self.cancel_btn = ttk.Button(act, text="Cancel", command=self.cancel, state="disabled")
         self.cancel_btn.grid(row=0, column=3)
         self.status = ttk.Label(bot, text="Ready.", foreground="#333")
-        self.status.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.status.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         self.bind_all("<Left>", lambda e: self._key_pan(e, -5))
         self.bind_all("<Right>", lambda e: self._key_pan(e, 5))
@@ -828,6 +837,44 @@ class App(tk.Tk):
         self.status.config(text=f"Bowling order applied to {k} balls.")
         self._edited(select_uids=[c.uid for c in sel])
 
+    def _exportable(self, c: Clip) -> bool:
+        return c.enabled and (not self.export_only or c.batter in self.export_only or c.bowler in self.export_only)
+
+    def choose_export_players(self):
+        names = sorted({n for v in self.videos for c in v.clips for n in (c.batter, c.bowler) if n})
+        if not names:
+            messagebox.showinfo(APP_NAME, "No player names yet. Use 'Recognise players automatically' or set "
+                                          "names in the Players box first.")
+            return
+        ExportPlayersDialog(self, names)
+
+    def set_export_only(self, names: set[str]):
+        self.export_only = names
+        self.export_only_label.config(text="Exporting: all balls" if not names else
+                                      "Exporting only: " + ", ".join(sorted(names)))
+
+    def recognise_players(self):
+        v = self.cur
+        if not v or not v.motion or not v.clips:
+            messagebox.showinfo(APP_NAME, "Select an analysed video first.")
+            return
+        RecogniseDialog(self, v)
+
+    def apply_recognised(self, v: VideoItem, role: str, clip_groups: list[tuple[Clip, int]], names: dict[int, str]):
+        n = 0
+        for c, g in clip_groups:
+            name = names.get(g, "").strip()
+            if name and c in v.clips:
+                setattr(c, role, name)
+                n += 1
+        for name in set(names.values()):
+            self._remember_name(role, name.strip())
+        if v is self.cur:
+            self._edited()
+        else:
+            self._autosave(v)
+        self.status.config(text=f"Names set for {n} balls.")
+
     def edit_squad(self):
         SquadDialog(self)
 
@@ -1100,8 +1147,9 @@ class App(tk.Tk):
         if not vids:
             messagebox.showinfo(APP_NAME, "There is nothing to export yet – add a video and wait for the analysis.")
             return
-        if not any(c.enabled for v in vids for c in v.clips):
-            messagebox.showinfo(APP_NAME, "No balls are marked to keep.")
+        if not any(self._exportable(c) for v in vids for c in v.clips):
+            messagebox.showinfo(APP_NAME, "No balls to export." + (
+                " None of the kept balls belong to the chosen players." if self.export_only else ""))
             return
         if not (self.do_clips.get() or self.do_reel.get() or self.do_csv.get() or self.do_edl.get()
                 or self.do_players.get()):
@@ -1127,7 +1175,7 @@ class App(tk.Tk):
             if not messagebox.askyesno(APP_NAME, f"Only {free / 1024 ** 3:.1f} GB free in the output folder. Continue?"):
                 return
         self._save_settings()
-        jobs = [(v.path, v.motion.info, [Clip(c.start, c.end, c.peak, c.score, c.enabled, c.manual,
+        jobs = [(v.path, v.motion.info, [Clip(c.start, c.end, c.peak, c.score, self._exportable(c), c.manual,
                                               batter=c.batter, bowler=c.bowler)
                                          for c in v.clips], v.name) for v in vids]
         self._start(self._export_job, jobs, opts)
@@ -1247,6 +1295,199 @@ class RotationDialog(tk.Toplevel):
             return
         self.app.apply_rotation(order, self.to_end.get())
         self.destroy()
+
+
+class ExportPlayersDialog(tk.Toplevel):
+    def __init__(self, app: App, names: list[str]):
+        super().__init__(app)
+        self.app = app
+        self.title("Export only these players")
+        self.transient(app)
+        f = ttk.Frame(self, padding=10)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Tick the players whose balls you want. A ball is exported if its batter\n"
+                          "or its bowler is ticked. Untick everything to export all balls.").pack(anchor="w")
+        self.vars = {}
+        box = ttk.Frame(f)
+        box.pack(anchor="w", pady=6)
+        for i, n in enumerate(names):
+            var = tk.BooleanVar(value=n in app.export_only)
+            self.vars[n] = var
+            ttk.Checkbutton(box, text=n, variable=var).grid(row=i % 12, column=i // 12, sticky="w", padx=(0, 16))
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=(6, 0))
+        ttk.Button(b, text="All balls", command=self.clear).pack(side="left")
+        ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(b, text="OK", command=self.ok).pack(side="right", padx=6)
+        self.grab_set()
+
+    def clear(self):
+        self.app.set_export_only(set())
+        self.destroy()
+
+    def ok(self):
+        self.app.set_export_only({n for n, v in self.vars.items() if v.get()})
+        self.destroy()
+
+
+class RecogniseDialog(tk.Toplevel):
+    """Groups the balls of the selected video by player, then the analyst names each group once."""
+
+    def __init__(self, app: App, v: VideoItem):
+        super().__init__(app)
+        self.app, self.v = app, v
+        self.title(f"Recognise players – {v.name}")
+        self.transient(app)
+        self.geometry("1000x680")
+        self.q: queue.Queue = queue.Queue()
+        self.cancel = threading.Event()
+        self.images = []
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="Who:").grid(row=0, column=0, sticky="w")
+        self.role = tk.StringVar(value="batter")
+        ttk.Radiobutton(top, text="Batters", variable=self.role, value="batter").grid(row=0, column=1, sticky="w")
+        ttk.Radiobutton(top, text="Bowlers (camera behind the bowler)", variable=self.role,
+                        value="bowler").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(top, text="How many players:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.k = tk.StringVar(value="Auto")
+        ttk.Combobox(top, textvariable=self.k, values=["Auto"] + [str(i) for i in range(2, 9)], width=6,
+                     state="readonly").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(top, text="'Auto' is usually best; if two players end up in one group, set the number.",
+                  foreground="#666").grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(6, 0))
+        self.go = ttk.Button(top, text="Find players", style="Big.TButton", command=self.start)
+        self.go.grid(row=0, column=3, rowspan=2, padx=(20, 0))
+        self.prog = ttk.Progressbar(self, mode="determinate", maximum=1000)
+        self.prog.pack(fill="x", padx=10)
+        self.msg = ttk.Label(self, padding=(10, 4), wraplength=780, text=(
+            "The app looks at each ball's player just before the delivery (helmet, shirt, pads, gloves, "
+            "build, left- or right-handed) and groups the balls that show the same person. Then you name "
+            "each group once. Give two groups the same name to join them."))
+        self.msg.pack(fill="x")
+        outer = ttk.Frame(self)
+        outer.pack(fill="both", expand=True, padx=10)
+        self.canvas = tk.Canvas(outer, highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=sb.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bot = ttk.Frame(self, padding=10)
+        bot.pack(fill="x")
+        self.apply_btn = ttk.Button(bot, text="Apply names", style="Big.TButton", command=self.apply,
+                                    state="disabled")
+        self.apply_btn.pack(side="right")
+        ttk.Button(bot, text="Close", command=self.close).pack(side="right", padx=6)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.result = None
+        self.name_vars: dict[int, tk.StringVar] = {}
+
+    def start(self):
+        self.go.config(state="disabled")
+        self.apply_btn.config(state="disabled")
+        for w in self.inner.winfo_children():
+            w.destroy()
+        self.cancel.clear()
+        role = self.role.get()
+        k = None if self.k.get() == "Auto" else int(self.k.get())
+        clips = list(self.v.clips)
+        self.msg.config(text="Looking at every ball…")
+
+        def job():
+            try:
+                g = auto_players.find_players(self.v.path, self.v.motion, clips, role, k,
+                                              progress=lambda f: self.q.put(("p", f)), cancel=self.cancel.is_set)
+                self.q.put(("done", role, clips, g))
+            except Cancelled:
+                pass
+            except Exception as e:
+                traceback.print_exc()
+                self.q.put(("err", str(e)))
+        threading.Thread(target=job, daemon=True).start()
+        self.after(100, self.poll)
+
+    def poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                if m[0] == "p":
+                    self.prog["value"] = m[1] * 1000
+                elif m[0] == "err":
+                    self.go.config(state="normal")
+                    self.msg.config(text=f"Could not recognise players: {m[1]}")
+                    return
+                elif m[0] == "done":
+                    self.show(*m[1:])
+                    return
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(150, self.poll)
+
+    def show(self, role, clips, g):
+        self.go.config(state="normal")
+        self.prog["value"] = 0
+        pairs = [(c, l) for c, l in zip(clips, g.labels)]
+        self.result = (role, pairs)
+        groups = sorted(set(g.labels) - {-1})
+        ball_no = {c.uid: i + 1 for i, c in enumerate(sorted(clips, key=lambda c: c.peak))}
+        self.msg.config(text=f"Found {len(groups)} player(s). Check the pictures, type or choose each name, "
+                             "then press 'Apply names'. Same name for two groups = one player.")
+        squad = self.app.batters if role == "batter" else self.app.bowlers
+        self.images.clear()
+        for row, gid in enumerate(groups):
+            members = [c for c, l in pairs if l == gid]
+            fr = ttk.LabelFrame(self.inner, text=f" Player {row + 1}  ·  {len(members)} balls ", padding=6)
+            fr.grid(row=row, column=0, sticky="ew", pady=4)
+            pics = ttk.Frame(fr)
+            pics.grid(row=0, column=0, rowspan=2)
+            for j, img in enumerate(g.samples.get(gid, [])):
+                fn = os.path.join(self.app.tmp, f"grp_{id(self)}_{gid}_{j}.ppm")
+                try:
+                    auto_players.save_ppm(img, fn, 90)
+                    ph = tk.PhotoImage(file=fn)
+                    self.images.append(ph)
+                    ttk.Label(pics, image=ph).grid(row=0, column=j, padx=2)
+                except Exception:
+                    pass
+            nums = sorted(ball_no[c.uid] for c in members)
+            ttk.Label(fr, foreground="#555", wraplength=260, text="Balls " + _ranges(nums)).grid(
+                row=0, column=1, sticky="nw", padx=10)
+            var = tk.StringVar(value="")
+            self.name_vars[gid] = var
+            nf = ttk.Frame(fr)
+            nf.grid(row=1, column=1, sticky="w", padx=10)
+            ttk.Label(nf, text="Name:").pack(side="left")
+            ttk.Combobox(nf, textvariable=var, values=squad, width=18).pack(side="left", padx=4)
+        self.apply_btn.config(state="normal")
+
+    def apply(self):
+        if not self.result:
+            return
+        names = {g: v.get() for g, v in self.name_vars.items()}
+        if not any(n.strip() for n in names.values()):
+            messagebox.showinfo(APP_NAME, "Type at least one name.", parent=self)
+            return
+        role, pairs = self.result
+        self.app.apply_recognised(self.v, role, pairs, names)
+        self.close()
+
+    def close(self):
+        self.cancel.set()
+        self.destroy()
+
+
+def _ranges(nums: list[int]) -> str:
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}–{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
 
 
 class RoiDialog(tk.Toplevel):
