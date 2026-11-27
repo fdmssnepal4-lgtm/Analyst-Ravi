@@ -1,0 +1,55 @@
+name: Build Ball Cutter for Windows
+
+on:
+  push:
+    paths: ["desktop/ball-cutter/**", ".github/workflows/ball-cutter-windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/ball-cutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Test
+        working-directory: desktop/ball-cutter/tests
+        run: python -m unittest -v
+      - name: Build app
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name BallCutter
+          --icon packaging/icon.ico --add-data "packaging/icon.ico;packaging"
+          --collect-all imageio_ffmpeg app.py
+      - name: Check the built app starts and finds FFmpeg
+        shell: pwsh
+        run: |
+          $ff = Get-ChildItem dist/BallCutter -Recurse -Filter "ffmpeg*.exe" | Select-Object -First 1
+          if (-not $ff) { throw "FFmpeg was not bundled" }
+          & $ff.FullName -version | Select-Object -First 1
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $ver = (Select-String -Path ballcutter/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$ver" packaging/installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BallCutter-Windows-Installer
+          path: desktop/ball-cutter/dist/BallCutter-Setup-*.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BallCutter-Windows-Portable
+          path: desktop/ball-cutter/dist/BallCutter/

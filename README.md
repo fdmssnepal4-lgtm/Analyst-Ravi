@@ -34,3 +34,7 @@ Open it once while online; after that it works with no internet. Save a backup (
 **Updating.** After changing any file in `public/crease/`, bump `VERSION` in `public/crease/sw.js` so tablets pick up the new version.
 
 **Locally:** `npm run dev`, then open `/crease/`.
+
+## Ball Cutter (Windows desktop app)
+
+`desktop/ball-cutter/` is a Windows app that cuts long training-session recordings into one clip per ball automatically, for either the batter-view or the behind-the-bowler camera. It exports separate ball clips, a joined reel, a CSV ball list and a Premiere Pro EDL. The Windows installer is built by `.github/workflows/ball-cutter-windows.yml`. See [desktop/ball-cutter/README.md](desktop/ball-cutter/README.md) for install and usage.
