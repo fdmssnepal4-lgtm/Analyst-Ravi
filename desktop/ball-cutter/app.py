@@ -268,6 +268,7 @@ class App(tk.Tk):
         ttk.Button(teach, text="Next possible miss ▶", command=self.next_possible_miss).pack(fill="x")
         ttk.Button(teach, text="Find more like selected", command=self.find_more).pack(fill="x", pady=(4, 0))
         ttk.Button(teach, text="Skip balls like this", command=self.skip_like).pack(fill="x", pady=(4, 0))
+        ttk.Button(teach, text="Skip all yellow (unsure)", command=self.skip_yellow).pack(fill="x", pady=(4, 0))
         self.undo_btn = ttk.Button(teach, text="Undo", command=self.undo, state="disabled")
         self.undo_btn.pack(fill="x", pady=(4, 0))
         self.auto_find = tk.BooleanVar(value=self.settings.get("auto_find", True))
@@ -1013,6 +1014,20 @@ class App(tk.Tk):
             x.enabled = False
         self._edited(c)
         self.status.config(text=f"Skipped this clip and {len(like)} more like it. Press Undo if that was wrong.")
+
+    def skip_yellow(self):
+        v = self.cur
+        if not v or not v.motion:
+            return
+        unsure = [c for c in v.clips if c.enabled and not c.manual and c.score < 1.4]
+        if not unsure:
+            self.status.config(text="There are no yellow (unsure) clips.")
+            return
+        self._push_undo(v)
+        for c in unsure:
+            c.enabled = False
+        self._edited()
+        self.status.config(text=f"Skipped {len(unsure)} yellow (unsure) clips. Press Undo to bring them back.")
 
     def next_possible_miss(self):
         v = self.cur

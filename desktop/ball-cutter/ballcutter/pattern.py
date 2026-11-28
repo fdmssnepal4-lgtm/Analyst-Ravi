@@ -239,6 +239,7 @@ def learn(F: np.ndarray, fps: float, gw: int) -> PatternResult | None:
     if best is not None:
         s = np.maximum(s, best[1])
         n_t = 2
+
     # the shape of the movement is not enough: a slow shuffle in the batter's spot has the right
     # shape but far less movement than a delivery. Scale down anything weaker than a typical ball.
     energy = _energy(F, pre + post + 1, pre)

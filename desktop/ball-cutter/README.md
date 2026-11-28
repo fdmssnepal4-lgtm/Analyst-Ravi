@@ -110,6 +110,16 @@ If a video has too few clear balls to learn from (under about 6), the app uses t
 
 On 18 difficult test sessions (673 balls: a fielder moving all the time, the batter wandering between balls, light changes, soft leaves and blocks, balls 4–30 seconds apart, left- and right-handers, fast bowlers mixed with spinners), the tracker missed 34 balls on its own. Most of those are recovered with the teaching tools below. Version 1.0 found none of the first 150.
 
+### Close camera (batter fills the picture)
+
+When the camera is close to or above the batter, she fills the whole height of the picture. In those videos the clearest sign of a delivery is her **stride and swing**: a fast movement over her whole height, unlike her fidgeting between balls. Ball Cutter checks each video for this. If the swings line up with the balls it found, it:
+
+- adds a ball for every swing that has no clip,
+- re-centres each clip on its swing, so the delivery is never cut off at the start (real sessions had clips that began exactly at the swing),
+- marks clips without any swing yellow. These are often the batter walking away and back between balls. Click **Skip all yellow (unsure)** in *Teach the tracker* to clear them after a quick look. A leave, where the batter hardly moves, can also be yellow or missed.
+
+This came from three real net-session reports: at normal sensitivity, every swing in them is now inside a clip with at least 2.5 seconds before it (one ball in one session got 1 second).
+
 ### If balls are still missed: teach the tracker
 
 The tracker learns what a delivery looks like in each video. If your session mixes very different bowling (fast bowlers and spinners, a bowler from round the wicket, a leg-spinner's slow loop), some balls can look so different that they are missed. The tracker also takes a second look by itself for a whole group of look-alike balls it didn't cover (another bowling style) and adds them in yellow. The **Teach the tracker** box lets you fix the rest in a few clicks:
@@ -118,6 +128,7 @@ The tracker learns what a delivery looks like in each video. If your session mix
 - **Adding a missed ball finds the others like it.** With *When I add a missed ball, find others like it* ticked (the default), adding one missed spinner ball also adds every other ball that looks like it, in yellow. One click often recovers all of that bowler's balls. On test sessions with spinners and fast bowlers mixed, 15–20 missed balls went down to 2–4 after adding 3–5 by hand.
 - **Find more like selected**: the same, on demand, for the balls you select (for example several balls you added).
 - **Skip balls like this**: select a wrong clip (no ball in it) and click this. That clip and every other clip that looks like it are marked ✗.
+- **Skip all yellow (unsure)**: marks every yellow clip ✗ in one go.
 - **Undo**: takes back the last add, find or skip.
 
 If the tracker still struggles with your footage, fix the list, then click **Save report for developer…**. It saves a small zip with the movement data and your corrections, with no video and no pictures. Send that file to whoever maintains Ball Cutter (for example, upload it to the GitHub repository) so the tracker can be tuned on your real sessions.

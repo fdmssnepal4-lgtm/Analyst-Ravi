@@ -139,6 +139,25 @@ class MixedBowlersTest(unittest.TestCase):
         self.assertLessEqual(len(missed()), max(2, len(truth) // 10))
 
 
+class CloseCameraTest(unittest.TestCase):
+    """Camera close to the batter, who fills the whole picture, fidgets and walks around between balls.
+    Every ball that is found must have the delivery inside its clip (at least 2 s before the shot):
+    real sessions had clips that started at the swing, so the delivery was cut off."""
+
+    def test_close_camera(self):
+        import make_close_video
+        d = tempfile.mkdtemp()
+        video = os.path.join(d, "close.mp4")
+        truth = make_close_video.make(video, duration=240, seed=3)
+        m = analyze(video, use_cache=False)
+        clips = detect_balls(m, list(PRESETS.values())[0])
+        found = [b for b in truth if any(c.start <= b <= c.end for c in clips)]
+        lead = [min(b - c.start for c in clips if c.start <= b <= c.end) for b in found]
+        print(f"\n  close camera: {len(found)}/{len(truth)} balls inside a clip, shortest lead-in {min(lead):.1f}s")
+        self.assertGreaterEqual(len(found), 0.75 * len(truth))  # leaves (hardly any movement) can be missed
+        self.assertGreaterEqual(min(lead), 2.0)
+
+
 class PlayerRecognitionTest(unittest.TestCase):
     """Three batters in the same team kit (only helmet, gloves, height and stance differ) taking turns."""
 

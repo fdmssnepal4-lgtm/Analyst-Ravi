@@ -432,8 +432,79 @@ def detect_balls(motion: Motion, params: Params, signal: Signal | None = None) -
         clips.append(Clip(start, end, t, extra_scores.get(i, float(ex[i] / sig.threshold))))
     if sig.mode == "pattern" and params.second_look:
         clips += _second_delivery_type(motion, params, clips)
+    clips = _use_swings(motion, params, clips, sig)
     _split_at_quiet(clips, act, fps)
     return fix_bounds(clips, motion.duration)
+
+
+SWING_LAG = 0.3  # the marked moment sits this long after the start of the batter's swing
+
+
+def swing_signal(motion: Motion, rows: np.ndarray | None = None) -> np.ndarray:
+    """Fast movement over the player's whole height: for each moment, the share of the picture's row
+    bands (only `rows`, if given) in which movement suddenly jumps compared with the second before.
+    When the camera is close to the batter she fills the frame, and her stride and swing light up
+    every band at once, unlike her fidgeting between balls."""
+    c = motion.cells.astype(np.float32) / 255.0
+    band = c.max(2)  # strongest change in each row band
+    if rows is not None:
+        band = band[:, rows]
+    k = max(1, int(1.0 * motion.fps))
+    pad = np.concatenate([np.repeat(band[:1], k, 0), band])
+    win = np.lib.stride_tricks.sliding_window_view(pad, k + 1, axis=0)  # (n, bands, k+1)
+    base = np.median(win, axis=2)
+    onset = np.clip(band - base, 0, None)
+    thr = np.percentile(onset, 90, axis=0) + 1e-3
+    return _smooth((onset > thr).mean(1), 3)
+
+
+def _use_swings(motion: Motion, params: Params, clips: list[Clip], sig: Signal) -> list[Clip]:
+    """If this video's balls come with a clear full-height swing (camera close to the batter), use it:
+    every swing without a clip becomes a ball, each clip is centred on its swing (so the delivery
+    is never cut off at the start), and clips without any swing are marked 'check'."""
+    fps = motion.fps
+    strong = [c for c in clips if c.score >= 1.4]
+    if len(strong) < 6:
+        return clips
+    # the rows where the action happens at the confident balls
+    acc = np.zeros(GRID_H)
+    for c in strong:
+        i = int(c.peak * fps)
+        acc += motion.cells[max(0, i - 10): i + 10].astype(np.float32).mean((0, 2))
+    rows = np.nonzero(acc >= 0.3 * acc.max())[0]
+    if len(rows) < 4:
+        return clips
+    sw = swing_signal(motion, rows)
+    gap = max(1, int(params.min_gap * fps))
+    swings = [i / fps for i in _find_peaks(sw, 0.5, gap)]
+    if len(swings) < 6:
+        return clips
+    # is the swing a delivery sign in this video? most swings must come with a confident ball
+    agree = sum(1 for t in swings if any(abs(t + SWING_LAG - c.peak) <= 2.0 for c in strong))
+    if agree < 0.6 * len(swings):
+        return clips
+    out: list[Clip] = []
+    used: set[float] = set()
+    for c in clips:
+        near = [t for t in swings if -2.0 <= c.peak - (t + SWING_LAG) <= 3.0 and t not in used]
+        if near:
+            t = min(near, key=lambda t: abs(c.peak - t - SWING_LAG))
+            used.add(t)
+            shift = t + SWING_LAG - c.peak
+            c.peak += shift
+            c.start = max(0.0, c.start + shift)
+            c.end = min(motion.duration, c.end + shift)
+        elif not c.manual:
+            c.score = min(c.score, 1.2)  # no swing: worth a look
+        out.append(c)
+    for t in swings:
+        if t not in used and not any(c.start <= t <= c.end for c in out):
+            p = t + SWING_LAG
+            i = int(p * fps)
+            support = float(sig.excess[max(0, i - 15): i + 15].max()) if 0 <= i < len(sig.excess) else 0.0
+            score = 1.5 if support >= 0.5 * sig.threshold else 1.3  # yellow unless the pattern agrees
+            out.append(Clip(max(0.0, p - params.pre_roll), min(motion.duration, p + params.post_roll), p, score))
+    return sorted(out, key=lambda c: c.peak)
 
 
 def _second_delivery_type(motion: Motion, params: Params, clips: list[Clip]) -> list[Clip]:
@@ -488,6 +559,11 @@ def _split_at_quiet(clips: list[Clip], act: Signal, fps: float) -> None:
         if hi - lo < 2:
             continue
         cut = (lo + int(np.argmin(calm[lo:hi]))) / fps
+        # a confident ball keeps its lead-in / follow-through over an uncertain neighbour
+        if b.score >= 1.4 > a.score:
+            cut = min(cut, b.peak - min(2.8, 0.8 * (b.peak - a.peak)))
+        elif a.score >= 1.4 > b.score:
+            cut = max(cut, a.peak + min(2.0, 0.6 * (b.peak - a.peak)))
         a.end = min(a.end, cut)
         b.start = max(b.start, cut)
 
