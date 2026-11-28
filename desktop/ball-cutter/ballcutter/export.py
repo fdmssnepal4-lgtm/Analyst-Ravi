@@ -262,13 +262,30 @@ def export_players(
     return root, warnings
 
 
-def write_report(path: str, motion, clips: list[Clip], params, version: str) -> None:
-    """A zip with the motion grid (no images) and the reviewed ball list, for tuning the tracker."""
+def _strip(src: str, start: float, end: float, out: str, frames: int = 8, width: int = 200) -> bool:
+    """One picture holding `frames` small frames evenly spread from start to end, left to right."""
+    dur = max(0.4, end - start)
+    p = run(["-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.3f}", "-i", src, "-t", f"{dur:.3f}",
+             "-vf", f"fps={frames / dur:.4f},scale={width}:-2,tile={frames}x1", "-frames:v", "1", "-q:v", "6", out])
+    return p.returncode == 0 and os.path.exists(out)
+
+
+def write_report(path: str, motion, clips: list[Clip], params, version: str, pictures: bool = False,
+                 spots: list[float] | None = None, progress: Callable[[float, str], None] | None = None,
+                 cancel: Callable[[], bool] | None = None) -> None:
+    """A zip with the motion grid and the reviewed ball list, for tuning the tracker. With
+    pictures=True it also holds, for every clip, one strip of small frames from its start to its end,
+    and a strip around each spot in `spots` (places where a ball may have been missed), so the
+    session can be checked ball by ball without the video."""
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+
     import numpy as np
 
     buf = io.BytesIO()
     np.savez_compressed(buf, cells=motion.cells, fps=motion.fps)
     info = motion.info
+    ordered = sorted(clips, key=lambda c: c.peak)
     meta = {
         "app_version": version,
         "video": {"name": os.path.basename(info.path), "duration": info.duration, "fps": info.fps,
@@ -277,8 +294,36 @@ def write_report(path: str, motion, clips: list[Clip], params, version: str) -> 
         "balls": [{"start": round(c.start, 2), "end": round(c.end, 2), "shot": round(c.peak, 2),
                    "score": round(c.score, 3), "kept": c.enabled, "added_by_hand": c.manual,
                    "batter": c.batter, "bowler": c.bowler}
-                  for c in sorted(clips, key=lambda c: c.peak)],
+                  for c in ordered],
     }
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    jobs: list[tuple[str, float, float]] = []
+    if pictures:
+        n = 0
+        for c in ordered:
+            if c.enabled:
+                n += 1
+            tag = f"ball_{n:03d}" if c.enabled else "skipped"
+            jobs.append((f"pictures/{c.start:07.1f}s_{tag}{'_hand' if c.manual else ''}.jpg", c.start, c.end))
+        for t in spots or []:
+            jobs.append((f"pictures/{max(0.0, t - 3):07.1f}s_possible_miss.jpg", t - 3.0, t + 3.0))
+    with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("motion.npz", buf.getvalue())
         z.writestr("review.json", json.dumps(meta, indent=1))
+        done = [0]
+
+        def one(job):
+            name, a, b = job
+            if cancel and cancel():
+                raise Cancelled()
+            out = os.path.join(tmp, name.replace("/", "_"))
+            ok = _strip(info.path, a, b, out)
+            done[0] += 1
+            if progress:
+                progress(done[0] / max(1, len(jobs)), f"Report pictures {done[0]}/{len(jobs)}")
+            return name, out if ok else None
+
+        if jobs:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                for name, out in ex.map(one, jobs):
+                    if out:
+                        z.write(out, name, compress_type=zipfile.ZIP_STORED)

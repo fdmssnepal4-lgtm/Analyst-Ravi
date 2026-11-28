@@ -131,7 +131,7 @@ The tracker learns what a delivery looks like in each video. If your session mix
 - **Skip all yellow (unsure)**: marks every yellow clip ✗ in one go.
 - **Undo**: takes back the last add, find or skip.
 
-If the tracker still struggles with your footage, fix the list, then click **Save report for developer…**. It saves a small zip with the movement data and your corrections, with no video and no pictures. Send that file to whoever maintains Ball Cutter (for example, upload it to the GitHub repository) so the tracker can be tuned on your real sessions.
+If the tracker still struggles with your footage, fix the list, then click **Save report for developer…** and answer **Yes** to *Include small pictures of every ball?*: every clip gets a strip of 8 small frames from start to end, plus pictures of places where a ball may have been missed, so the developer can check your session ball by ball without the video. It saves a small zip with the movement data and your corrections, with no video and no pictures. Send that file to whoever maintains Ball Cutter (for example, upload it to the GitHub repository) so the tracker can be tuned on your real sessions.
 
 ## For developers
 

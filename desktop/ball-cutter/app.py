@@ -694,6 +694,10 @@ class App(tk.Tk):
                         messagebox.showerror(APP_NAME, f"Could not open the video player:\n{e}")
                 elif kind == "error":
                     messagebox.showerror(APP_NAME, msg[1])
+                elif kind == "report_done":
+                    self.status.config(text=f"Report saved: {msg[1]}")
+                    messagebox.showinfo(APP_NAME, f"Report saved:\n{msg[1]}\n\nUpload it to the GitHub repository "
+                                                  "(Add file → Upload files) so the developer can check it.")
                 elif kind == "exported":
                     self.status.config(text=f"Export finished: {msg[1]}")
                     extra = ("\n\nNote:\n" + "\n".join(msg[2])) if len(msg) > 2 and msg[2] else ""
@@ -1225,30 +1229,46 @@ class App(tk.Tk):
         self._pan(secs)
 
     def save_report(self):
-        """Motion data + the analyst's corrections (no video), to tune the tracker on real sessions."""
+        """Motion data + the analyst's corrections, and optionally small pictures of every clip, so the
+        tracker can be checked and tuned on real sessions."""
         v = self.cur
         if not v or not v.motion:
             messagebox.showinfo(APP_NAME, "Select an analysed video first.")
             return
-        if not messagebox.askokcancel(APP_NAME, (
-                "This saves a small file (no video, no pictures) with the movement data of this video and "
-                "your corrections to the ball list.\n\nBefore saving, please fix the list as well as you "
-                "can: add the balls that were missed (double-click the zoom graph) and delete false ones. "
-                "Your corrections show exactly where the tracker went wrong.")):
+        if self._busy():
             return
+        if not messagebox.askokcancel(APP_NAME, (
+                "This saves a report file with the movement data of this video and your corrections to the "
+                "ball list.\n\nIf you can, fix the list first: add the balls that were missed (double-click "
+                "the zoom graph) and skip false ones. Your corrections show exactly where the tracker went "
+                "wrong.")):
+            return
+        pictures = messagebox.askyesno(APP_NAME, (
+            "Include small pictures of every ball?\n\nEach clip gets one strip of 8 small frames from its "
+            "start to its end, plus pictures of places where a ball may have been missed. This lets the "
+            "developer check your session ball by ball without the video (the file gets a few MB bigger).\n\n"
+            "Recommended: Yes."))
         stem = os.path.splitext(v.name)[0]
         path = filedialog.asksaveasfilename(title="Save report", defaultextension=".zip",
                                             initialfile=f"{stem}_ballcutter_report.zip",
                                             filetypes=[("Zip file", "*.zip")])
         if not path:
             return
-        try:
-            write_report(path, v.motion, v.clips, v.params, __version__)
-        except Exception as e:
-            messagebox.showerror(APP_NAME, f"Could not save the report:\n{e}")
-            return
-        messagebox.showinfo(APP_NAME, f"Report saved:\n{path}\n\nSend this file to whoever maintains "
-                                      "Ball Cutter (for example, upload it to the GitHub repository).")
+        spots = []
+        if pictures:
+            try:
+                spots = possible_misses(v.motion, v.params, v.clips)[:40]
+            except Exception:
+                spots = []
+        clips = [Clip(c.start, c.end, c.peak, c.score, c.enabled, c.manual, batter=c.batter, bowler=c.bowler)
+                 for c in v.clips]
+
+        def job():
+            def prog(f, s):
+                self.q.put(("progress", f, s))
+            write_report(path, v.motion, clips, v.params, __version__, pictures, spots, prog, self.cancel_flag.is_set)
+            self.q.put(("report_done", path))
+        self._start(job)
 
     # ------------------------------------------------------------------ export
     def choose_out(self):
