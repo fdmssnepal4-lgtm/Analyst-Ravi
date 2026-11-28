@@ -108,11 +108,19 @@ Ball Cutter then **learns what a delivery looks like in each video**. With a fix
 
 If a video has too few clear balls to learn from (under about 6), the app uses the plain movement tracker instead. The line above the graph shows which tracker was used.
 
-On difficult test sessions (a fielder moving all the time, the batter wandering between balls, light changes, soft leaves and blocks, balls 4–30 seconds apart) version 1.1 found 343 of 368 balls. Version 1.0 found none of the first 150. The weakest cases left are very soft balls filmed from behind the bowler, and sessions where right- and left-handers alternate.
+On 18 difficult test sessions (673 balls: a fielder moving all the time, the batter wandering between balls, light changes, soft leaves and blocks, balls 4–30 seconds apart, left- and right-handers, fast bowlers mixed with spinners), the tracker missed 34 balls on its own. Most of those are recovered with the teaching tools below. Version 1.0 found none of the first 150.
 
-### If balls are still missed
+### If balls are still missed: teach the tracker
 
-Fix the list in the app (double-click the zoom graph to add each missed ball, and press Del on false ones), then click **Save report for developer…**. This saves a small zip with the movement data and your corrections. It contains no video and no pictures. Send that file to whoever maintains Ball Cutter (for example, upload it to the GitHub repository) so the tracker can be tuned on your real footage.
+The tracker learns what a delivery looks like in each video. If your session mixes very different bowling (fast bowlers and spinners, a bowler from round the wicket, a leg-spinner's slow loop), some balls can look so different that they are missed. The tracker also takes a second look by itself for a whole group of look-alike balls it didn't cover (another bowling style) and adds them in yellow. The **Teach the tracker** box lets you fix the rest in a few clicks:
+
+- **Next possible miss ▶**: jumps to the strongest spot where something happened but no clip exists, shows the picture, and draws a purple "possible miss?" line on the zoom graph. If it is a ball, double-click the line to add it. If not, press the button again. Spots you already looked at are skipped.
+- **Adding a missed ball finds the others like it.** With *When I add a missed ball, find others like it* ticked (the default), adding one missed spinner ball also adds every other ball that looks like it, in yellow. One click often recovers all of that bowler's balls. On test sessions with spinners and fast bowlers mixed, 15–20 missed balls went down to 2–4 after adding 3–5 by hand.
+- **Find more like selected**: the same, on demand, for the balls you select (for example several balls you added).
+- **Skip balls like this**: select a wrong clip (no ball in it) and click this. That clip and every other clip that looks like it are marked ✗.
+- **Undo**: takes back the last add, find or skip.
+
+If the tracker still struggles with your footage, fix the list, then click **Save report for developer…**. It saves a small zip with the movement data and your corrections, with no video and no pictures. Send that file to whoever maintains Ball Cutter (for example, upload it to the GitHub repository) so the tracker can be tuned on your real sessions.
 
 ## For developers
 

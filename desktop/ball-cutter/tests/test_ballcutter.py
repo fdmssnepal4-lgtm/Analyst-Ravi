@@ -114,6 +114,31 @@ class HardSessionTest(unittest.TestCase):
         self.run_case("bowler", 23)
 
 
+class MixedBowlersTest(unittest.TestCase):
+    """Fast bowlers and spinners in one session: the spinners look nothing like the fast bowlers.
+    The automatic second look plus teaching (adding a missed ball finds the others like it) must
+    recover the spinners."""
+
+    def test_spinners_are_recovered(self):
+        from ballcutter.detect import find_more_like, manual_clip
+        d = tempfile.mkdtemp()
+        video = os.path.join(d, "mixed.mp4")
+        truth = make_hard_video.make(video, duration=300, seed=41, view="batter", mix=True)
+        m = analyze(video, use_cache=False)
+        p = list(PRESETS.values())[0]
+        clips = detect_balls(m, p)
+        missed = lambda: [b for b in truth if not any(c.start <= b <= c.end for c in clips)]
+        first = len(missed())
+        for _ in range(3):  # the analyst adds up to three missed balls by hand
+            if not missed():
+                break
+            ex = manual_clip(missed()[0], p, m.duration)
+            clips = fix_bounds(clips + [ex], m.duration)
+            clips = fix_bounds(clips + find_more_like(m, p, clips, [ex]), m.duration)
+        print(f"\n  mixed bowlers: {len(truth)} balls, missed {first} automatically, {len(missed())} after teaching")
+        self.assertLessEqual(len(missed()), max(2, len(truth) // 10))
+
+
 class PlayerRecognitionTest(unittest.TestCase):
     """Three batters in the same team kit (only helmet, gloves, height and stance differ) taking turns."""
 

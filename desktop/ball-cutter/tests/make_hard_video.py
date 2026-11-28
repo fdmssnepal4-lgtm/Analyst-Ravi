@@ -28,8 +28,10 @@ def schedule(duration, seed):
     return balls
 
 
-def make(path, duration=420, fps=25, seed=7, w=640, h=360, view="batter", switch=False):
-    """switch=True: a left-hander bats in the second half (mirrored stance and shots)."""
+def make(path, duration=420, fps=25, seed=7, w=640, h=360, view="batter", switch=False, mix=False):
+    """switch=True: a left-hander bats in the second half (mirrored stance and shots).
+    mix=True: four bowlers in rotation, two fast and two spinners (different line, shorter and
+    slower action), with the batter playing different shots to the spinners."""
     rng = np.random.default_rng(seed + 100)
     balls = schedule(duration, seed)
     yy, xx = np.mgrid[0:h, 0:w]
@@ -60,7 +62,23 @@ def make(path, duration=420, fps=25, seed=7, w=640, h=360, view="batter", switch
         bx_home = 380 if lefty else 300
         bx = int(np.clip(bx_home + bxo + 8 * np.sin(t * 0.9), 120, 520))
         f[150:300, bx:bx + 40] = 230
-        for b, s in balls:
+        for nb, (b, s) in enumerate(balls):
+            spin = mix and nb % 4 >= 2
+            if spin and b - 0.9 <= t <= b + 0.9:
+                k = (t - (b - 0.9)) / 1.8
+                if view == "bowler":  # short run-up from the other side, small figure
+                    size = int(55 - 25 * k)
+                    f[int(185 - 30 * k):int(185 - 30 * k) + size, 250:250 + size // 2] = 40
+                else:  # arm from round the wicket, slow looping ball
+                    ax = 260
+                    f[int(20 + k * 60):int(20 + k * 60) + 18, ax:ax + 12] = 45
+                    yb = int(30 + k * 230 - 60 * np.sin(np.pi * k))
+                    f[yb:yb + 6, ax + 20 + int(k * 40):ax + 26 + int(k * 40)] = 255
+                if t >= b - 0.1:  # forward defensive / sweep: bat goes down, not across
+                    q = (t - (b - 0.1)) / 1.0
+                    y0 = 170 + int(q * 90 * s)
+                    f[y0:y0 + 20, bx - 30:bx + 10] = 250
+                continue
             if b - 1.2 <= t <= b + 0.8:
                 k = (t - (b - 1.2)) / 2.0
                 if view == "bowler":  # bowler running away from camera, getting smaller
@@ -98,4 +116,5 @@ def score(found_peaks, truth, tol=1.5):
 
 
 if __name__ == "__main__":
-    print(make(sys.argv[1], view=sys.argv[2] if len(sys.argv) > 2 else "batter", switch="switch" in sys.argv))
+    print(make(sys.argv[1], view=sys.argv[2] if len(sys.argv) > 2 else "batter", switch="switch" in sys.argv,
+               mix="mix" in sys.argv))

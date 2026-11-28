@@ -62,6 +62,7 @@ class Params:
     auto_extend: bool = False  # grow the clip to cover the whole burst of motion
     max_clip: float = 20.0
     roi: tuple[float, float, float, float] | None = None  # x0, y0, x1, y1 (0..1)
+    second_look: bool = True  # look for another kind of delivery (e.g. spinners) the pattern misses
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -249,13 +250,75 @@ class Signal:
     templates: int = 0
 
 
+def features(motion: Motion, roi):
+    """Per-area activity used by the pattern tracker (cached on the Motion object)."""
+    key = ("F", tuple(roi) if roi else None)
+    if key not in motion.patterns:
+        motion.patterns[key] = pattern.features(motion.cells, roi_mask(roi), motion.fps)
+    return motion.patterns[key]
+
+
+def find_more_like(motion: Motion, params: Params, clips: list[Clip], examples: list[Clip],
+                   strictness: float = 0.6) -> list[Clip]:
+    """New clips at every moment that looks like the example balls (taught by the analyst)."""
+    F = features(motion, params.roi)
+    taken = [(c.start, c.end) for c in clips]
+    found = pattern.find_similar(F, motion.fps, [c.peak for c in examples], taken, params.min_gap, strictness)
+    return [Clip(max(0.0, t - params.pre_roll), min(motion.duration, t + params.post_roll), t,
+                 min(0.99, sim), True, False) for t, sim in found]
+
+
+def clips_like(motion: Motion, params: Params, clips: list[Clip], example: Clip, strictness: float = 0.75) -> list[Clip]:
+    """The clips (other than the example) that look like the example clip."""
+    F = features(motion, params.roi)
+    others = [c for c in clips if c is not example]
+    sims = pattern.similarity_to(F, motion.fps, example.peak, [c.peak for c in others])
+    return [c for c, s in zip(others, sims) if s >= strictness]
+
+
+def possible_misses(motion: Motion, params: Params, clips: list[Clip], limit: int = 300) -> list[float]:
+    """Moments worth checking for a missed ball, strongest first: a sharp burst of movement (each part
+    of the picture judged against how busy it normally is), a partial match to the delivery pattern,
+    or plain movement, at a place not covered by any kept clip."""
+    fps = motion.fps
+    gap = max(1, int(params.min_gap * fps))
+    inside = np.zeros(motion.n, bool)
+    for c in clips:
+        if c.enabled:
+            inside[max(0, int(c.start * fps)): int(c.end * fps) + 1] = True
+    kept = [int(c.peak * fps) for c in clips if c.enabled and c.score >= 1.4 and 0 <= int(c.peak * fps) < motion.n]
+    F = features(motion, params.roi)
+    a = F.mean(1)
+    burst = np.clip(pattern.smooth(a, 3) - pattern.smooth(a, int(3 * fps)), 0, None)
+    burst = burst / (float(np.median(burst[kept])) if kept else float(np.percentile(burst, 99)) + 1e-9)
+    cand: dict[int, float] = {}
+    for i in _find_peaks(burst, 0.35, gap):
+        cand[i] = float(burst[i])
+    act = _motion_signal(motion, params)
+    for i in _find_peaks(act.excess, 0.5 * act.threshold, gap):
+        cand[i] = max(cand.get(i, 0.0), 0.8 * act.excess[i] / act.threshold)
+    sig = compute_signal(motion, params)
+    if sig.mode == "pattern":
+        for i in _find_peaks(sig.excess, 0.6 * sig.threshold, gap):
+            cand[i] = max(cand.get(i, 0.0), sig.excess[i] / sig.threshold)
+    picked: list[int] = []
+    taken = np.zeros(motion.n, bool)
+    for i in sorted(cand, key=lambda i: -cand[i]):
+        if inside[i] or taken[i]:
+            continue
+        picked.append(i)
+        taken[max(0, i - gap): i + gap] = True
+        if len(picked) >= limit:
+            break
+    return [i / fps for i in picked]
+
+
 def _pattern(motion: Motion, roi):
     """Learned delivery pattern for this video and detection area (cached on the Motion object)."""
     key = tuple(roi) if roi else None
     if key not in motion.patterns:
         try:
-            F = pattern.features(motion.cells, roi_mask(roi), motion.fps)
-            motion.patterns[key] = pattern.learn(F, motion.fps, GRID_W)
+            motion.patterns[key] = pattern.learn(features(motion, roi), motion.fps, GRID_W)
         except Exception:
             motion.patterns[key] = None
     return motion.patterns[key]
@@ -367,8 +430,49 @@ def detect_balls(motion: Motion, params: Params, signal: Signal | None = None) -
                 start = t - params.pre_roll - ext_f * scale
                 end = t + params.post_roll + ext_b * scale
         clips.append(Clip(start, end, t, extra_scores.get(i, float(ex[i] / sig.threshold))))
+    if sig.mode == "pattern" and params.second_look:
+        clips += _second_delivery_type(motion, params, clips)
     _split_at_quiet(clips, act, fps)
     return fix_bounds(clips, motion.duration)
+
+
+def _second_delivery_type(motion: Motion, params: Params, clips: list[Clip]) -> list[Clip]:
+    """Sessions often mix bowling styles (fast bowlers and spinners look very different). Take the
+    strongest sharp bursts that no clip covers; if one of them has a whole group of look-alikes
+    (another kind of delivery, not a one-off), add that group as 'check' items."""
+    fps = motion.fps
+    F = features(motion, params.roi)
+    a = F.mean(1)
+    burst = pattern.smooth(a, 3) - pattern.smooth(a, int(3 * fps))
+    kept = [int(c.peak * fps) for c in clips if c.score >= 1.4 and 0 <= int(c.peak * fps) < motion.n]
+    if len(kept) < 4:
+        return []
+    ref = float(np.median(burst[kept])) + 1e-9
+    gap = max(1, int(params.min_gap * fps))
+    added: list[Clip] = []
+    for _ in range(3):  # up to three other kinds of delivery
+        cover = np.zeros(motion.n, bool)
+        for c in clips + added:
+            cover[max(0, int(c.start * fps)): int(c.end * fps) + 1] = True
+        seeds = [i for i in _find_peaks(burst / ref, 0.6, gap) if not cover[i]]
+        best: list[tuple[float, float]] = []
+        for i in sorted(seeds, key=lambda i: -burst[i])[:6]:
+            taken = [(c.start, c.end) for c in clips + added]
+            group = pattern.find_similar(F, fps, [i / fps], taken, params.min_gap, 0.7)
+            group = [(t, s) for t, s in group if burst[int(t * fps)] >= 0.4 * ref]
+            if len(group) + 1 > len(best):
+                best = [(i / fps, 1.0)] + group
+        if len(best) < 5:
+            break
+        # a group that mostly sits a few seconds before balls already found is the batter getting ready
+        # (walking back to the crease, taking guard), not another kind of delivery
+        starts = np.array(sorted(c.peak for c in clips if c.score >= 1.4))
+        before = sum(1 for t, _ in best if np.any((starts > t + 0.5) & (starts <= t + 7.0)))
+        if before >= 0.5 * len(best):
+            break
+        added += [Clip(max(0.0, t - params.pre_roll), min(motion.duration, t + params.post_roll), t,
+                       0.9, True, False) for t, _ in best]
+    return added
 
 
 def _split_at_quiet(clips: list[Clip], act: Signal, fps: float) -> None:

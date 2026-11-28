@@ -251,3 +251,60 @@ def learn(F: np.ndarray, fps: float, gw: int) -> PatternResult | None:
     sel = [p for p in cand if s[p] >= np.percentile(s[cand], 70)]
     q, level = _quality(s, cand, sel)
     return PatternResult(s, level, n_t, q)
+
+
+def find_similar(F: np.ndarray, fps: float, examples: list[float], taken: list[tuple[float, float]],
+                 min_gap: float, strictness: float = 0.6) -> list[tuple[float, float]]:
+    """Teach by example: the analyst points at balls the tracker missed (times in seconds, roughly at
+    the shot). Each example is lined up on its burst of movement, the examples are averaged into a
+    template, and every other moment that matches it closely (and is not inside an existing clip in
+    `taken`) is returned as (time, similarity relative to the examples)."""
+    n = F.shape[0]
+    pre, post = int(PRE_S * fps), int(POST_S * fps)
+    act = F.mean(1)
+    burst = np.clip(smooth(act, 3) - smooth(act, int(3 * fps)), 0, None)
+    centres = []
+    for t in examples:
+        i = int(t * fps)
+        lo, hi = max(pre, i - int(1.5 * fps)), min(n - post - 1, i + int(1.5 * fps))
+        if hi <= lo:
+            continue
+        centres.append(lo + int(np.argmax(burst[lo:hi + 1])))  # line up on the burst
+    if not centres:
+        return []
+    T = _windows(F, centres, pre, post).mean(0)
+    s = _ncc(F, T, pre)
+    energy = _energy(F, pre + post + 1, pre)
+    ref = float(np.median(energy[centres])) + 1e-6
+    s = s * np.sqrt(np.clip(energy / ref, 0, 1))
+    level = float(np.median(s[centres])) + 1e-6
+    s = s / level
+    gap = max(1, int(min_gap * fps))
+    blocked = np.zeros(n, bool)
+    for a, b in taken:
+        blocked[max(0, int(a * fps)): int(b * fps) + 1] = True
+    for c in centres:
+        blocked[max(0, c - gap): c + gap] = True
+    return [(p / fps, float(s[p])) for p in find_peaks(s, strictness, gap) if not blocked[p]]
+
+
+def similarity_to(F: np.ndarray, fps: float, example: float, times: list[float]) -> list[float]:
+    """How much each moment in `times` looks like the example moment (1.0 = as much as the example
+    itself), allowing +-1 s of misalignment."""
+    n = F.shape[0]
+    pre, post = int(PRE_S * fps), int(POST_S * fps)
+    act = F.mean(1)
+    burst = np.clip(smooth(act, 3) - smooth(act, int(3 * fps)), 0, None)
+    i = int(example * fps)
+    lo, hi = max(pre, i - int(1.5 * fps)), min(n - post - 1, i + int(1.5 * fps))
+    if hi <= lo:
+        return [0.0] * len(times)
+    c = lo + int(np.argmax(burst[lo:hi + 1]))
+    T = _windows(F, [c], pre, post)[0]
+    s = _ncc(F, T, pre)
+    energy = _energy(F, pre + post + 1, pre)
+    s = s * np.sqrt(np.clip(energy / (energy[c] + 1e-6), 0, 1))
+    s = s / (s[c] + 1e-6)
+    w = int(1.0 * fps)
+    return [float(s[max(0, int(t * fps) - w): int(t * fps) + w + 1].max()) if 0 <= int(t * fps) < n else 0.0
+            for t in times]

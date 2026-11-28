@@ -15,8 +15,8 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 
 from ballcutter import __version__
-from ballcutter.detect import (PRESETS, Cancelled, Clip, Motion, Params, analyze, compute_signal,
-                               detect_balls, fix_bounds, manual_clip)
+from ballcutter.detect import (PRESETS, Cancelled, Clip, Motion, Params, analyze, clips_like, compute_signal,
+                               detect_balls, find_more_like, fix_bounds, manual_clip, possible_misses)
 from ballcutter import players as auto_players
 from ballcutter import session
 from ballcutter.export import (ExportOptions, cut, export_players, export_video, fmt_time, remove_clip_files,
@@ -118,7 +118,7 @@ class App(tk.Tk):
             "last_dir": self.settings.get("last_dir", ""),
             "version": SETTINGS_VERSION,
             "batters": self.batters, "bowlers": self.bowlers, "bowling_order": self.bowling_order,
-            "do_players": self.do_players.get(),
+            "do_players": self.do_players.get(), "auto_find": self.auto_find.get(),
         }
         try:
             with open(settings_path(), "w", encoding="utf-8") as f:
@@ -244,7 +244,7 @@ class App(tk.Tk):
 
         thumbf = ttk.Frame(lower)
         thumbf.grid(row=2, column=0, sticky="nw", pady=8)
-        self.thumb = ttk.Label(thumbf, text="(frame at the shot appears here)", width=34, anchor="center",
+        self.thumb = ttk.Label(thumbf, text="(frame at the shot)", width=26, anchor="center",
                                relief="groove")
         self.thumb.pack(side="left")
         ctl = ttk.Frame(thumbf, padding=(10, 0))
@@ -263,6 +263,16 @@ class App(tk.Tk):
                                                                            sticky="ew", pady=(4, 0))
         ttk.Button(ctl, text="Re-detect (drop my edits)", command=self.force_redetect).grid(
             row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        teach = ttk.LabelFrame(thumbf, text=" Teach the tracker ", padding=6)
+        teach.pack(side="left", anchor="n", padx=(4, 0))
+        ttk.Button(teach, text="Next possible miss ▶", command=self.next_possible_miss).pack(fill="x")
+        ttk.Button(teach, text="Find more like selected", command=self.find_more).pack(fill="x", pady=(4, 0))
+        ttk.Button(teach, text="Skip balls like this", command=self.skip_like).pack(fill="x", pady=(4, 0))
+        self.undo_btn = ttk.Button(teach, text="Undo", command=self.undo, state="disabled")
+        self.undo_btn.pack(fill="x", pady=(4, 0))
+        self.auto_find = tk.BooleanVar(value=self.settings.get("auto_find", True))
+        ttk.Checkbutton(teach, text="When I add a missed\nball, find others like it",
+                        variable=self.auto_find).pack(anchor="w", pady=(6, 0))
 
         right = ttk.LabelFrame(outer, text=" 3. Balls found ", padding=6)
         right.grid(row=1, column=2, sticky="nsew", pady=8, padx=(8, 0))
@@ -668,6 +678,12 @@ class App(tk.Tk):
                     if v is self.cur:
                         self._show_video(v)
                     self.status.config(text=msg_text)
+                elif kind == "thumb_any":
+                    try:
+                        self.thumb_img = tk.PhotoImage(file=msg[1])
+                        self.thumb.config(image=self.thumb_img, text="", width=0)
+                    except tk.TclError:
+                        pass
                 elif kind == "thumb":
                     self._show_thumb(msg[1], msg[2])
                 elif kind == "open":
@@ -736,7 +752,7 @@ class App(tk.Tk):
         out = os.path.join(self.tmp, f"thumb_{c.uid}_{int(c.peak * 10)}.png")
 
         def job():
-            if os.path.exists(out) or extract_frame(v.path, c.peak, out, 300):
+            if os.path.exists(out) or extract_frame(v.path, c.peak, out, 240):
                 self.q.put(("thumb", c.uid, out))
         threading.Thread(target=job, daemon=True).start()
 
@@ -934,10 +950,98 @@ class App(tk.Tk):
         v = self.cur
         if not v or not v.motion:
             return
+        self._push_undo(v)
         c = manual_clip(t, v.params, v.motion.duration)
         v.clips.append(c)
+        found = []
+        if self.auto_find.get():
+            try:
+                found = find_more_like(v.motion, v.params, fix_bounds(list(v.clips), v.motion.duration), [c])
+            except Exception:
+                traceback.print_exc()
+            v.clips += found
         self._edited(c)
-        self.status.config(text=f"Added a ball at {fmt_time(t)}.")
+        self.status.config(text=f"Added a ball at {fmt_time(t)}." + (
+            f" Found {len(found)} more like it (yellow) – check them, or press Undo." if found else ""))
+
+    # ------------------------------------------------------------------ teaching
+    def _push_undo(self, v: VideoItem):
+        snap = [Clip(c.start, c.end, c.peak, c.score, c.enabled, c.manual, batter=c.batter, bowler=c.bowler)
+                for c in v.clips]
+        self.undo_stack = (getattr(self, "undo_stack", []) + [(v, snap)])[-20:]
+        self.undo_btn.config(state="normal")
+
+    def undo(self):
+        stack = getattr(self, "undo_stack", [])
+        while stack:
+            v, snap = stack.pop()
+            if v in self.videos:
+                v.clips = snap
+                if v is not self.cur:
+                    self.vlist.selection_set(str(id(v)))
+                self._edited()
+                self.status.config(text="Undone.")
+                break
+        if not stack:
+            self.undo_btn.config(state="disabled")
+
+    def find_more(self):
+        v = self.cur
+        sel = self._sel_clips()
+        if not v or not v.motion or not sel:
+            messagebox.showinfo(APP_NAME, "Select one or more balls (for example the ones you added by hand), "
+                                          "then click this to find every other ball that looks like them.")
+            return
+        self._push_undo(v)
+        found = find_more_like(v.motion, v.params, v.clips, sel)
+        v.clips += found
+        self._edited(select_uids=[c.uid for c in sel])
+        self.status.config(text=f"Found {len(found)} more ball(s) like the selected one(s) (yellow)." if found else
+                           "No other balls look like the selected one(s).")
+
+    def skip_like(self):
+        v = self.cur
+        c = self._sel_clip()
+        if not v or not v.motion or not c:
+            messagebox.showinfo(APP_NAME, "Select a wrong clip (not a real ball), then click this to skip it and "
+                                          "every other clip that looks like it.")
+            return
+        self._push_undo(v)
+        like = [x for x in clips_like(v.motion, v.params, v.clips, c) if x.enabled and not x.manual]
+        c.enabled = False
+        for x in like:
+            x.enabled = False
+        self._edited(c)
+        self.status.config(text=f"Skipped this clip and {len(like)} more like it. Press Undo if that was wrong.")
+
+    def next_possible_miss(self):
+        v = self.cur
+        if not v or not v.motion:
+            return
+        seen = v.__dict__.setdefault("seen_spots", [])
+        cands = [t for t in possible_misses(v.motion, v.params, v.clips) if all(abs(t - x) > 1.0 for x in seen)]
+        if not cands:
+            self.status.config(text="No more likely missed balls. (Spots you already looked at are not shown again.)")
+            return
+        t = cands[0]  # strongest first
+        seen.append(t)
+        self.detail_center = t
+        self.cursor_t = t
+        self.tree.selection_remove(self.tree.selection())
+        self.redraw()
+        self.status.config(text=f"Possible missed ball at {fmt_time(t)} ({len(cands) - 1} more spots). "
+                                "If it is a ball, double-click the purple line in the zoom graph; "
+                                "otherwise click 'Next possible miss' again.")
+        self._show_frame_at(t)
+
+    def _show_frame_at(self, t: float):
+        v = self.cur
+        out = os.path.join(self.tmp, f"spot_{int(t * 10)}.png")
+
+        def job():
+            if os.path.exists(out) or extract_frame(v.path, t, out, 240):
+                self.q.put(("thumb_any", out))
+        threading.Thread(target=job, daemon=True).start()
 
     def preview(self):
         c = self._sel_clip()
@@ -1040,6 +1144,11 @@ class App(tk.Tk):
             cv.create_line(*pts, fill=COL_LINE, width=1.5)
         ty = gh - thr / ymax * (gh - 18)
         cv.create_line(0, ty, W, ty, fill=COL_THR, dash=(4, 3))
+        if self.cursor_t is not None and t0 <= self.cursor_t <= t1:
+            cx = (self.cursor_t - t0) * sx
+            cv.create_line(cx, 0, cx, gh, fill=COL_CURSOR, width=3)
+            cv.create_text(cx + 4, gh - 4, anchor="sw", text="possible miss?", fill=COL_CURSOR,
+                           font=("Segoe UI", 9, "bold"))
         cv.create_line(0, gh, W, gh, fill="#999")
         step = 5
         t = (int(t0) // step) * step
